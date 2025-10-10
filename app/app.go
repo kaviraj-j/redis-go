@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/app/internal/parser"
 	"github.com/codecrafters-io/redis-starter-go/app/internal/store"
@@ -61,7 +63,30 @@ func (app *App) handleConnection(conn net.Conn) {
 				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'set' command"))
 				continue
 			}
-			app.store.Set(cmd.Args[0], cmd.Args[1])
+			key, val := cmd.Args[0], cmd.Args[1]
+			var expiry time.Time
+			if len(cmd.Args) >= 4 {
+				timeUnitStr := cmd.Args[2]
+				timeUnitStr = strings.ToUpper(timeUnitStr)
+
+				if !(timeUnitStr == "EX" || timeUnitStr == "PX") {
+					conn.Write(parser.EncodeBulkString("ERR wrong expiry format"))
+					continue
+				}
+				s, err := strconv.Atoi(cmd.Args[3])
+				if err != nil {
+					conn.Write(parser.EncodeBulkString("ERR wrong expiry format"))
+					continue
+				}
+				if timeUnitStr == "EX" {
+					// seconds
+					expiry = time.Now().Add(time.Duration(s) * time.Second)
+				} else {
+					// milli seconds
+					expiry = time.Now().Add(time.Duration(s) * time.Millisecond)
+				}
+			}
+			app.store.Set(key, val, expiry)
 			conn.Write(parser.EncodeString("OK"))
 		case "GET":
 			if len(cmd.Args) < 1 {
