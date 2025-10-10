@@ -13,3 +13,8 @@ func EncodeString(s string) []byte {
 func EncodeBulkString(s string) []byte {
 	return []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(s), s))
 }
+
+// EncodeNullBulkString returns a null response
+func EncodeNullBulkString() []byte {
+	return []byte("$-1\r\n")
+}
