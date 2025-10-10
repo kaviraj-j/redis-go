@@ -18,5 +18,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer conn.Close()
-	conn.Write([]byte("+PONG\r\n"))
+	for {
+		tmp := make([]byte, 128)
+		_, err := conn.Read(tmp)
+		if err != nil {
+			fmt.Println("error in reading from connection")
+			os.Exit(0)
+		}
+		conn.Write([]byte("+PONG\r\n"))
+	}
 }
