@@ -82,6 +82,59 @@ func (s *Store) RpushList(key string, data []string) (int, error) {
 	return listVal.Len(), nil
 }
 
+func (s *Store) LRange(key string, start, end int) []string {
+	values := make([]string, 0)
+	value, exists := s.storage[key]
+
+	// Check if key exists, is a list, and not expired
+	if !exists || value.Type != ValueTypeList || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
+		return values
+	}
+
+	listValues, ok := value.Data.(ListValue)
+	if !ok {
+		return values
+	}
+
+	length := listValues.Data.Len()
+	if length == 0 || start >= length {
+		return values
+	}
+
+	// Normalize start index
+	if start < 0 {
+		start = max(length+start, 0)
+	}
+
+	// Normalize end index
+	if end < 0 {
+		end = length + end
+	} else if end >= length {
+		end = length - 1
+	}
+
+	// Validate range
+	if start > end {
+		return values
+	}
+
+	// Iterate to the start position
+	element := listValues.Data.Front()
+	for i := 0; i < start && element != nil; i++ {
+		element = element.Next()
+	}
+
+	// Collect values in range
+	for i := start; i <= end && element != nil; i++ {
+		if str, ok := element.Value.(string); ok {
+			values = append(values, str)
+		}
+		element = element.Next()
+	}
+
+	return values
+}
+
 func (s *Store) Get(key string) (string, bool, error) {
 	val, ok := s.storage[key]
 	if !ok {

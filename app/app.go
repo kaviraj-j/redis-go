@@ -90,7 +90,7 @@ func (app *App) handleConnection(conn net.Conn) {
 			conn.Write(parser.EncodeBulkString(valStr))
 		case "RPUSH":
 			if len(cmd.Args) < 2 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'RPush' command"))
+				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'RPUSH' command"))
 				continue
 			}
 			key := cmd.Args[0]
@@ -101,6 +101,21 @@ func (app *App) handleConnection(conn net.Conn) {
 				continue
 			}
 			conn.Write(parser.EncodeInt(n))
+		case "LRANGE":
+			if len(cmd.Args) < 3 {
+				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'LRANGE' command"))
+				continue
+			}
+			start, err := strconv.Atoi(cmd.Args[1])
+			if err != nil {
+				conn.Write(parser.EncodeBulkString("ERR invalid index"))
+			}
+			end, err := strconv.Atoi(cmd.Args[2])
+			if err != nil {
+				conn.Write(parser.EncodeBulkString("ERR invalid index"))
+			}
+			values := app.store.LRange(cmd.Args[0], start, end)
+			conn.Write(parser.EncodeArray(values))
 		default:
 			conn.Write(parser.EncodeString("ERR unknown command '" + cmd.Name + "'"))
 		}

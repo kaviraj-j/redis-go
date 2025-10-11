@@ -23,3 +23,12 @@ func EncodeBulkString(s string) []byte {
 func EncodeNullBulkString() []byte {
 	return []byte("$-1\r\n")
 }
+
+// EncodeArray returns a RESP array response
+func EncodeArray(s []string) []byte {
+	res := []byte(fmt.Sprintf("*%d\r\n", len(s)))
+	for _, str := range s {
+		res = append(res, EncodeBulkString(str)...)
+	}
+	return res
+}
