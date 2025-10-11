@@ -93,13 +93,9 @@ func (app *App) handleConnection(conn net.Conn) {
 				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'RPush' command"))
 				continue
 			}
-			key, val := cmd.Args[0], cmd.Args[1]
-			expiry, err := getExpiry(cmd)
-			if err != nil {
-				conn.Write(parser.EncodeBulkString(err.Error()))
-				continue
-			}
-			n, err := app.store.RpushList(key, val, expiry)
+			key := cmd.Args[0]
+			values := cmd.Args[1:]
+			n, err := app.store.RpushList(key, values)
 			if err != nil {
 				conn.Write(parser.EncodeBulkString(err.Error()))
 				continue

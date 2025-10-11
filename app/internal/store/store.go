@@ -50,7 +50,7 @@ func (s *Store) SetString(key string, data string, expiry time.Time) {
 	}
 }
 
-func (s *Store) RpushList(key string, data string, expiry time.Time) (int, error) {
+func (s *Store) RpushList(key string, data []string) (int, error) {
 	value, exists := s.storage[key]
 
 	if exists && value.Type != ValueTypeList {
@@ -59,7 +59,7 @@ func (s *Store) RpushList(key string, data string, expiry time.Time) (int, error
 
 	var listVal *list.List
 
-	if !exists || (value.Expiry != (time.Time{}) && value.Expiry.Before(time.Now())) {
+	if !exists || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
 		listVal = list.New()
 	} else {
 		existingListValue, ok := value.Data.(ListValue)
@@ -69,12 +69,14 @@ func (s *Store) RpushList(key string, data string, expiry time.Time) (int, error
 		listVal = existingListValue.Data
 	}
 
-	listVal.PushBack(data)
+	for _, item := range data {
+		listVal.PushBack(item)
+	}
 
 	s.storage[key] = Value{
 		Data:   ListValue{Data: listVal},
 		Type:   ValueTypeList,
-		Expiry: expiry,
+		Expiry: value.Expiry,
 	}
 
 	return listVal.Len(), nil
