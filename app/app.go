@@ -116,6 +116,14 @@ func (app *App) handleConnection(conn net.Conn) {
 			}
 			values := app.store.LRange(cmd.Args[0], start, end)
 			conn.Write(parser.EncodeArray(values))
+		case "LLEN":
+			if len(cmd.Args) < 1 {
+				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'LLEN' command"))
+				continue
+			}
+			key := cmd.Args[0]
+			n := app.store.GetListLen(key)
+			conn.Write(parser.EncodeInt(n))
 		default:
 			conn.Write(parser.EncodeString("ERR unknown command '" + cmd.Name + "'"))
 		}

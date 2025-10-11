@@ -148,6 +148,20 @@ func (s *Store) LRange(key string, start, end int) []string {
 	return values
 }
 
+func (s *Store) GetListLen(key string) int {
+	value, exists := s.storage[key]
+
+	// Check if key exists, is a list, and not expired
+	if !exists || value.Type != ValueTypeList || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
+		return 0
+	}
+	listValues, ok := value.Data.(ListValue)
+	if !ok {
+		return 0
+	}
+	return listValues.Data.Len()
+}
+
 func (s *Store) Get(key string) (string, bool, error) {
 	val, ok := s.storage[key]
 	if !ok {
