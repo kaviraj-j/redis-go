@@ -27,6 +27,13 @@ type ListValue struct {
 	Data *list.List
 }
 
+type PushListDirection string
+
+const (
+	RPush PushListDirection = "RPUSH"
+	LPush PushListDirection = "LPUSH"
+)
+
 func (StringValue) isValueType() {}
 func (ListValue) isValueType()   {}
 
@@ -50,7 +57,7 @@ func (s *Store) SetString(key string, data string, expiry time.Time) {
 	}
 }
 
-func (s *Store) RpushList(key string, data []string) (int, error) {
+func (s *Store) PushList(key string, data []string, direction PushListDirection) (int, error) {
 	value, exists := s.storage[key]
 
 	if exists && value.Type != ValueTypeList {
@@ -69,8 +76,14 @@ func (s *Store) RpushList(key string, data []string) (int, error) {
 		listVal = existingListValue.Data
 	}
 
-	for _, item := range data {
-		listVal.PushBack(item)
+	if direction == RPush {
+		for _, item := range data {
+			listVal.PushBack(item)
+		}
+	} else {
+		for _, item := range data {
+			listVal.PushFront(item)
+		}
 	}
 
 	s.storage[key] = Value{

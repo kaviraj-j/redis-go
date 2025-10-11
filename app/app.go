@@ -88,14 +88,14 @@ func (app *App) handleConnection(conn net.Conn) {
 			}
 
 			conn.Write(parser.EncodeBulkString(valStr))
-		case "RPUSH":
+		case "RPUSH", "LPUSH":
 			if len(cmd.Args) < 2 {
 				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'RPUSH' command"))
 				continue
 			}
 			key := cmd.Args[0]
 			values := cmd.Args[1:]
-			n, err := app.store.RpushList(key, values)
+			n, err := app.store.PushList(key, values, store.PushListDirection(cmd.Name))
 			if err != nil {
 				conn.Write(parser.EncodeBulkString(err.Error()))
 				continue
