@@ -9,6 +9,11 @@ func EncodeString(s string) []byte {
 	return []byte("+" + s + "\r\n")
 }
 
+// EncodeInt returns a RESP integer reply
+func EncodeInt(n int) []byte {
+	return []byte(fmt.Sprintf(":%d\r\n", n))
+}
+
 // EncodeBulkString returns a RESP Bulk String reply.
 func EncodeBulkString(s string) []byte {
 	return []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(s), s))
