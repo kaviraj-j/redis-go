@@ -47,135 +47,192 @@ func (app *App) handleConnection(conn net.Conn) {
 
 		switch strings.ToUpper(cmd.Name) {
 		case "PING":
-			// PING -> +PONG
-			conn.Write(parser.EncodeString("PONG"))
-
+			app.handlePing(conn)
 		case "ECHO":
-			// ECHO message -> echo back
-			if len(cmd.Args) < 1 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'echo' command"))
-				continue
-			}
-			conn.Write(parser.EncodeBulkString(cmd.Args[0]))
+			app.handleEcho(conn, cmd)
 		case "SET":
-			// Set value and return OK
-			if len(cmd.Args) < 2 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'set' command"))
-				continue
-			}
-			key, val := cmd.Args[0], cmd.Args[1]
-			expiry, err := getExpiry(cmd)
-			if err != nil {
-				conn.Write(parser.EncodeBulkString(err.Error()))
-				continue
-			}
-			app.store.SetString(key, val, expiry)
-			conn.Write(parser.EncodeString("OK"))
+			app.handleSet(conn, cmd)
 		case "GET":
-			// get string
-			if len(cmd.Args) < 1 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'get' command"))
-				continue
-			}
-			valStr, ok, err := app.store.Get(cmd.Args[0])
-			if err != nil {
-				conn.Write(parser.EncodeString(err.Error()))
-				continue
-			}
-			if !ok {
-				conn.Write(parser.EncodeNullBulkString())
-				continue
-			}
-
-			conn.Write(parser.EncodeBulkString(valStr))
+			app.handleGet(conn, cmd)
 		case "RPUSH", "LPUSH":
-			if len(cmd.Args) < 2 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'RPUSH' command"))
-				continue
-			}
-			key := cmd.Args[0]
-			values := cmd.Args[1:]
-			n, err := app.store.PushList(key, values, store.PushListDirection(cmd.Name))
-			if err != nil {
-				conn.Write(parser.EncodeBulkString(err.Error()))
-				continue
-			}
-			conn.Write(parser.EncodeInt(n))
+			app.handlePush(conn, cmd)
 		case "LRANGE":
-			if len(cmd.Args) < 3 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'LRANGE' command"))
-				continue
-			}
-			start, err := strconv.Atoi(cmd.Args[1])
-			if err != nil {
-				conn.Write(parser.EncodeBulkString("ERR invalid index"))
-			}
-			end, err := strconv.Atoi(cmd.Args[2])
-			if err != nil {
-				conn.Write(parser.EncodeBulkString("ERR invalid index"))
-			}
-			values := app.store.LRange(cmd.Args[0], start, end)
-			conn.Write(parser.EncodeArray(values))
+			app.handleLRange(conn, cmd)
 		case "LLEN":
-			if len(cmd.Args) < 1 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'LLEN' command"))
-				continue
-			}
-			key := cmd.Args[0]
-			n := app.store.GetListLen(key)
-			conn.Write(parser.EncodeInt(n))
+			app.handleLLen(conn, cmd)
 		case "LPOP":
-			if len(cmd.Args) < 1 {
-				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'LPOP' command"))
-				continue
-			}
-			key, count, rmMultiple := cmd.Args[0], 1, false
-			if len(cmd.Args) >= 2 {
-				countStr := cmd.Args[1]
-				count, err = strconv.Atoi(countStr)
-				if err != nil {
-					conn.Write(parser.EncodeBulkString("ERR invalid count"))
-					continue
-				}
-				rmMultiple = true
-			}
-
-			res := app.store.ListPop(key, count)
-			if !rmMultiple {
-				if len(res) == 0 {
-					conn.Write(parser.EncodeNullBulkString())
-				} else {
-					conn.Write(parser.EncodeBulkString(res[0]))
-				}
-				continue
-			}
-			conn.Write(parser.EncodeArray(res))
+			app.handleLPop(conn, cmd)
 		default:
-			conn.Write(parser.EncodeString("ERR unknown command '" + cmd.Name + "'"))
+			conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 		}
 	}
 }
 
-func getExpiry(cmd *parser.Command) (time.Time, error) {
-	var expiry time.Time
-	if len(cmd.Args) >= 4 {
-		timeUnitStr := cmd.Args[2]
-		timeUnitStr = strings.ToUpper(timeUnitStr)
+func (app *App) handlePing(conn net.Conn) {
+	conn.Write(parser.EncodeString("PONG"))
+}
 
-		if !(timeUnitStr == "EX" || timeUnitStr == "PX") {
-			return expiry, fmt.Errorf("ERR wrong expiry format")
-		}
-		s, err := strconv.Atoi(cmd.Args[3])
-		if err != nil {
-			return expiry, fmt.Errorf("ERR wrong expiry format")
-		}
-		if timeUnitStr == "EX" {
-			// seconds
-			expiry = time.Now().Add(time.Duration(s) * time.Second)
-		} else {
-			// milli seconds
-			expiry = time.Now().Add(time.Duration(s) * time.Millisecond)
-		}
+func (app *App) handleEcho(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 1 {
+		conn.Write(parser.EncodeWrongNumArgsError("echo"))
+		return
 	}
+	conn.Write(parser.EncodeBulkString(cmd.Args[0]))
+}
+
+func (app *App) handleSet(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 2 {
+		conn.Write(parser.EncodeWrongNumArgsError("set"))
+		return
+	}
+
+	key, val := cmd.Args[0], cmd.Args[1]
+	expiry, err := parseExpiry(cmd)
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+
+	app.store.SetString(key, val, expiry)
+	conn.Write(parser.EncodeString("OK"))
+}
+
+func (app *App) handleGet(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 1 {
+		conn.Write(parser.EncodeWrongNumArgsError("get"))
+		return
+	}
+
+	valStr, ok, err := app.store.Get(cmd.Args[0])
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+
+	if !ok {
+		conn.Write(parser.EncodeNullBulkString())
+		return
+	}
+
+	conn.Write(parser.EncodeBulkString(valStr))
+}
+
+func (app *App) handlePush(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 2 {
+		conn.Write(parser.EncodeWrongNumArgsError(strings.ToLower(cmd.Name)))
+		return
+	}
+
+	key := cmd.Args[0]
+	values := cmd.Args[1:]
+	n, err := app.store.PushList(key, values, store.PushListDirection(cmd.Name))
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+
+	conn.Write(parser.EncodeInt(n))
+}
+
+func (app *App) handleLRange(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 3 {
+		conn.Write(parser.EncodeWrongNumArgsError("lrange"))
+		return
+	}
+
+	start, err := strconv.Atoi(cmd.Args[1])
+	if err != nil {
+		conn.Write(parser.EncodeInvalidIntError("start"))
+		return
+	}
+
+	end, err := strconv.Atoi(cmd.Args[2])
+	if err != nil {
+		conn.Write(parser.EncodeInvalidIntError("end"))
+		return
+	}
+
+	values, err := app.store.LRange(cmd.Args[0], start, end)
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+
+	conn.Write(parser.EncodeArray(values))
+}
+
+func (app *App) handleLLen(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 1 {
+		conn.Write(parser.EncodeWrongNumArgsError("llen"))
+		return
+	}
+
+	key := cmd.Args[0]
+	n, err := app.store.GetListLen(key)
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+
+	conn.Write(parser.EncodeInt(n))
+}
+
+func (app *App) handleLPop(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 1 {
+		conn.Write(parser.EncodeWrongNumArgsError("lpop"))
+		return
+	}
+
+	key, count, rmMultiple := cmd.Args[0], 1, false
+	if len(cmd.Args) >= 2 {
+		var err error
+		count, err = strconv.Atoi(cmd.Args[1])
+		if err != nil {
+			conn.Write(parser.EncodeInvalidIntError("count"))
+			return
+		}
+		rmMultiple = true
+	}
+
+	res, err := app.store.ListPop(key, count)
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+
+	if !rmMultiple {
+		if len(res) == 0 {
+			conn.Write(parser.EncodeNullBulkString())
+		} else {
+			conn.Write(parser.EncodeBulkString(res[0]))
+		}
+		return
+	}
+
+	conn.Write(parser.EncodeArray(res))
+}
+
+func parseExpiry(cmd *parser.Command) (time.Time, error) {
+	var expiry time.Time
+	if len(cmd.Args) < 4 {
+		return expiry, nil
+	}
+
+	timeUnitStr := strings.ToUpper(cmd.Args[2])
+	if timeUnitStr != "EX" && timeUnitStr != "PX" {
+		return expiry, fmt.Errorf("ERR syntax error")
+	}
+
+	duration, err := strconv.Atoi(cmd.Args[3])
+	if err != nil {
+		return expiry, fmt.Errorf("ERR value is not an integer or out of range")
+	}
+
+	if timeUnitStr == "EX" {
+		expiry = time.Now().Add(time.Duration(duration) * time.Second)
+	} else {
+		expiry = time.Now().Add(time.Duration(duration) * time.Millisecond)
+	}
+
 	return expiry, nil
 }

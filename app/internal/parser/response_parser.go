@@ -32,3 +32,17 @@ func EncodeArray(s []string) []byte {
 	}
 	return res
 }
+
+// EncodeError returns a RESP error reply.
+func EncodeError(err error) []byte {
+	return []byte("-" + err.Error() + "\r\n")
+}
+
+// Common error encoders
+func EncodeWrongNumArgsError(cmd string) []byte {
+	return EncodeError(fmt.Errorf("ERR wrong number of arguments for '%s' command", cmd))
+}
+
+func EncodeInvalidIntError(field string) []byte {
+	return EncodeError(fmt.Errorf("ERR value is not an integer or out of range"))
+}

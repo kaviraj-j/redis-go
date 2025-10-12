@@ -43,10 +43,37 @@ type Value struct {
 	Expiry time.Time
 }
 
+var (
+	ErrWrongType   = fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	ErrInvalidData = fmt.Errorf("ERR invalid data structure")
+)
+
 func NewStore() (*Store, error) {
 	return &Store{
 		storage: make(map[string]Value),
 	}, nil
+}
+
+// isExpired checks if a value has expired
+func (s *Store) isExpired(value Value) bool {
+	return !value.Expiry.IsZero() && value.Expiry.Before(time.Now())
+}
+
+// deleteIfExpired removes the key if it has expired
+func (s *Store) deleteIfExpired(key string, value Value) bool {
+	if s.isExpired(value) {
+		delete(s.storage, key)
+		return true
+	}
+	return false
+}
+
+// validateType checks if the value type matches expected type
+func (s *Store) validateType(value Value, expectedType Type) error {
+	if value.Type != expectedType {
+		return ErrWrongType
+	}
+	return nil
 }
 
 func (s *Store) SetString(key string, data string, expiry time.Time) {
@@ -60,18 +87,20 @@ func (s *Store) SetString(key string, data string, expiry time.Time) {
 func (s *Store) PushList(key string, data []string, direction PushListDirection) (int, error) {
 	value, exists := s.storage[key]
 
-	if exists && value.Type != ValueTypeList {
-		return 0, fmt.Errorf("ERR invalid type for RPUSH operation")
+	if exists {
+		if err := s.validateType(value, ValueTypeList); err != nil {
+			return 0, err
+		}
 	}
 
 	var listVal *list.List
 
-	if !exists || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
+	if !exists || s.isExpired(value) {
 		listVal = list.New()
 	} else {
 		existingListValue, ok := value.Data.(ListValue)
 		if !ok || existingListValue.Data == nil {
-			return 0, fmt.Errorf("ERR invalid list data")
+			return 0, ErrInvalidData
 		}
 		listVal = existingListValue.Data
 	}
@@ -95,23 +124,30 @@ func (s *Store) PushList(key string, data []string, direction PushListDirection)
 	return listVal.Len(), nil
 }
 
-func (s *Store) LRange(key string, start, end int) []string {
+func (s *Store) LRange(key string, start, end int) ([]string, error) {
 	values := make([]string, 0)
 	value, exists := s.storage[key]
 
-	// Check if key exists, is a list, and not expired
-	if !exists || value.Type != ValueTypeList || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
-		return values
+	if !exists {
+		return values, nil
+	}
+
+	if err := s.validateType(value, ValueTypeList); err != nil {
+		return nil, err
+	}
+
+	if s.deleteIfExpired(key, value) {
+		return values, nil
 	}
 
 	listValues, ok := value.Data.(ListValue)
 	if !ok {
-		return values
+		return nil, ErrInvalidData
 	}
 
 	length := listValues.Data.Len()
 	if length == 0 || start >= length {
-		return values
+		return values, nil
 	}
 
 	// Normalize start index
@@ -128,7 +164,7 @@ func (s *Store) LRange(key string, start, end int) []string {
 
 	// Validate range
 	if start > end {
-		return values
+		return values, nil
 	}
 
 	// Iterate to the start position
@@ -145,21 +181,31 @@ func (s *Store) LRange(key string, start, end int) []string {
 		element = element.Next()
 	}
 
-	return values
+	return values, nil
 }
 
-func (s *Store) ListPop(key string, count int) []string {
-	fmt.Println("count", count)
+func (s *Store) ListPop(key string, count int) ([]string, error) {
+	value, exists := s.storage[key]
 
-	value, listValues, exists := s.getList(key)
 	if !exists {
-		return []string{}
+		return []string{}, nil
 	}
 
-	fmt.Println("litValues", listValues.Data)
+	if err := s.validateType(value, ValueTypeList); err != nil {
+		return nil, err
+	}
+
+	if s.deleteIfExpired(key, value) {
+		return []string{}, nil
+	}
+
+	listValues, ok := value.Data.(ListValue)
+	if !ok {
+		return nil, ErrInvalidData
+	}
+
 	res := make([]string, 0, count)
 	for i := 0; i < count && listValues.Data.Len() > 0; i++ {
-		fmt.Println("inside the loop", i)
 		el := listValues.Data.Front()
 		if el == nil {
 			break
@@ -175,27 +221,33 @@ func (s *Store) ListPop(key string, count int) []string {
 	if listValues.Data.Len() == 0 {
 		delete(s.storage, key)
 	} else {
-		value.Data = ListValue{
-			Data: listValues.Data,
-		}
+		value.Data = ListValue{Data: listValues.Data}
 		s.storage[key] = value
 	}
 
-	return res
+	return res, nil
 }
 
-func (s *Store) GetListLen(key string) int {
+func (s *Store) GetListLen(key string) (int, error) {
 	value, exists := s.storage[key]
 
-	// Check if key exists, is a list, and not expired
-	if !exists || value.Type != ValueTypeList || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
-		return 0
+	if !exists {
+		return 0, nil
 	}
+
+	if err := s.validateType(value, ValueTypeList); err != nil {
+		return 0, err
+	}
+
+	if s.deleteIfExpired(key, value) {
+		return 0, nil
+	}
+
 	listValues, ok := value.Data.(ListValue)
 	if !ok {
-		return 0
+		return 0, ErrInvalidData
 	}
-	return listValues.Data.Len()
+	return listValues.Data.Len(), nil
 }
 
 func (s *Store) Get(key string) (string, bool, error) {
@@ -203,32 +255,19 @@ func (s *Store) Get(key string) (string, bool, error) {
 	if !ok {
 		return "", false, nil
 	}
-	if val.Type != ValueTypeString {
-		return "", false, fmt.Errorf("ERR invalid type for command GET")
+
+	if err := s.validateType(val, ValueTypeString); err != nil {
+		return "", false, err
 	}
 
-	if !val.Expiry.IsZero() && val.Expiry.Before(time.Now()) {
-		delete(s.storage, key)
+	if s.deleteIfExpired(key, val) {
 		return "", false, nil
 	}
 
 	strVal, ok := val.Data.(StringValue)
 	if !ok {
-		return "", false, fmt.Errorf("ERR invalid string data")
+		return "", false, ErrInvalidData
 	}
 
 	return string(strVal), true, nil
-}
-
-func (s *Store) getList(key string) (Value, *ListValue, bool) {
-	value, exists := s.storage[key]
-
-	// Check if key exists, is a list, and not expired
-	if !exists || value.Type != ValueTypeList || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
-		return value, nil, false
-	}
-
-	listValues, ok := value.Data.(ListValue)
-	return value, &listValues, ok
-
 }
