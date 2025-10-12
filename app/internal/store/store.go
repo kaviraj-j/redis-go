@@ -149,13 +149,17 @@ func (s *Store) LRange(key string, start, end int) []string {
 }
 
 func (s *Store) ListPop(key string, count int) []string {
+	fmt.Println("count", count)
+
 	value, listValues, exists := s.getList(key)
 	if !exists {
 		return []string{}
 	}
 
+	fmt.Println("litValues", listValues.Data)
 	res := make([]string, 0, count)
 	for i := 0; i < count && listValues.Data.Len() > 0; i++ {
+		fmt.Println("inside the loop", i)
 		el := listValues.Data.Front()
 		if el == nil {
 			break
@@ -171,7 +175,9 @@ func (s *Store) ListPop(key string, count int) []string {
 	if listValues.Data.Len() == 0 {
 		delete(s.storage, key)
 	} else {
-		value.Data = listValues
+		value.Data = ListValue{
+			Data: listValues.Data,
+		}
 		s.storage[key] = value
 	}
 

@@ -129,20 +129,27 @@ func (app *App) handleConnection(conn net.Conn) {
 				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'LPOP' command"))
 				continue
 			}
-			key, count := cmd.Args[0], 1
+			key, count, rmMultiple := cmd.Args[0], 1, false
 			if len(cmd.Args) >= 2 {
 				countStr := cmd.Args[1]
 				count, err = strconv.Atoi(countStr)
 				if err != nil {
 					conn.Write(parser.EncodeBulkString("ERR invalid count"))
+					continue
 				}
+				rmMultiple = true
 			}
+
 			res := app.store.ListPop(key, count)
-			if len(res) == 0 {
-				conn.Write(parser.EncodeNullBulkString())
-			} else {
-				conn.Write(parser.EncodeArray(res))
+			if !rmMultiple {
+				if len(res) == 0 {
+					conn.Write(parser.EncodeNullBulkString())
+				} else {
+					conn.Write(parser.EncodeBulkString(res[0]))
+				}
+				continue
 			}
+			conn.Write(parser.EncodeArray(res))
 		default:
 			conn.Write(parser.EncodeString("ERR unknown command '" + cmd.Name + "'"))
 		}
