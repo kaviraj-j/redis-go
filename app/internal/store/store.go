@@ -148,6 +148,36 @@ func (s *Store) LRange(key string, start, end int) []string {
 	return values
 }
 
+func (s *Store) ListPop(key string, count int) []string {
+	value, listValues, exists := s.getList(key)
+	if !exists {
+		return []string{}
+	}
+
+	res := make([]string, 0, count)
+	for i := 0; i < count && listValues.Data.Len() > 0; i++ {
+		el := listValues.Data.Front()
+		if el == nil {
+			break
+		}
+		str, ok := el.Value.(string)
+		if ok {
+			res = append(res, str)
+		}
+		listValues.Data.Remove(el)
+	}
+
+	// Update store if list becomes empty
+	if listValues.Data.Len() == 0 {
+		delete(s.storage, key)
+	} else {
+		value.Data = listValues
+		s.storage[key] = value
+	}
+
+	return res
+}
+
 func (s *Store) GetListLen(key string) int {
 	value, exists := s.storage[key]
 
@@ -182,4 +212,17 @@ func (s *Store) Get(key string) (string, bool, error) {
 	}
 
 	return string(strVal), true, nil
+}
+
+func (s *Store) getList(key string) (Value, *ListValue, bool) {
+	value, exists := s.storage[key]
+
+	// Check if key exists, is a list, and not expired
+	if !exists || value.Type != ValueTypeList || (!value.Expiry.IsZero() && value.Expiry.Before(time.Now())) {
+		return value, nil, false
+	}
+
+	listValues, ok := value.Data.(ListValue)
+	return value, &listValues, ok
+
 }

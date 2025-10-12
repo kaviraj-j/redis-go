@@ -124,6 +124,25 @@ func (app *App) handleConnection(conn net.Conn) {
 			key := cmd.Args[0]
 			n := app.store.GetListLen(key)
 			conn.Write(parser.EncodeInt(n))
+		case "LPOP":
+			if len(cmd.Args) < 1 {
+				conn.Write(parser.EncodeBulkString("ERR wrong number of arguments for 'LPOP' command"))
+				continue
+			}
+			key, count := cmd.Args[0], 1
+			if len(cmd.Args) >= 2 {
+				countStr := cmd.Args[1]
+				count, err = strconv.Atoi(countStr)
+				if err != nil {
+					conn.Write(parser.EncodeBulkString("ERR invalid count"))
+				}
+			}
+			res := app.store.ListPop(key, count)
+			if len(res) == 0 {
+				conn.Write(parser.EncodeNullBulkString())
+			} else {
+				conn.Write(parser.EncodeArray(res))
+			}
 		default:
 			conn.Write(parser.EncodeString("ERR unknown command '" + cmd.Name + "'"))
 		}
