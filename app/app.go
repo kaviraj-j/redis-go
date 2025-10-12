@@ -223,9 +223,10 @@ func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
 	key := cmd.Args[0]
 	timeoutStr := cmd.Args[1]
 
-	timeoutSec, err := strconv.Atoi(timeoutStr)
+	timeoutSec, err := strconv.ParseFloat(timeoutStr, 64)
+	fmt.Println("timeoutSec", timeoutSec)
 	if err != nil {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR timeout is not an integer")))
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR timeout is not a float")))
 		return
 	}
 
@@ -247,7 +248,7 @@ func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
 		// Success
 		response := []string{key, val}
 		conn.Write(parser.EncodeArray(response))
-	case <-time.After(time.Duration(timeoutSec) * time.Second):
+	case <-time.After(time.Duration(timeoutSec * float64(time.Second))):
 		// Timeout
 		app.store.RemoveBlockedChannel(key, doneChan)
 		conn.Write(parser.EncodeNullArray())
