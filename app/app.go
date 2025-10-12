@@ -62,6 +62,8 @@ func (app *App) handleConnection(conn net.Conn) {
 			app.handleLLen(conn, cmd)
 		case "LPOP":
 			app.handleLPop(conn, cmd)
+		case "BLPOP":
+			app.handleBLPop(conn, cmd)
 		default:
 			conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 		}
@@ -210,6 +212,46 @@ func (app *App) handleLPop(conn net.Conn, cmd *parser.Command) {
 	}
 
 	conn.Write(parser.EncodeArray(res))
+}
+
+func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 2 {
+		conn.Write(parser.EncodeWrongNumArgsError("blpop"))
+		return
+	}
+
+	key := cmd.Args[0]
+	timeoutStr := cmd.Args[1]
+
+	timeoutSec, err := strconv.Atoi(timeoutStr)
+	if err != nil {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR timeout is not an integer")))
+		return
+	}
+
+	doneChan, err := app.store.BlockListPop(key)
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+	// Infinite block if timeout = 0
+	if timeoutSec == 0 {
+		val := <-doneChan
+		response := []string{key, val}
+		conn.Write(parser.EncodeArray(response))
+		return
+	}
+
+	select {
+	case val := <-doneChan:
+		// Success
+		response := []string{key, val}
+		conn.Write(parser.EncodeArray(response))
+	case <-time.After(time.Duration(timeoutSec) * time.Second):
+		// Timeout
+		app.store.RemoveBlockedChannel(key, doneChan)
+		conn.Write(parser.EncodeNullArray())
+	}
 }
 
 func parseExpiry(cmd *parser.Command) (time.Time, error) {

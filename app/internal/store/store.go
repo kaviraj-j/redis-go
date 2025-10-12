@@ -3,11 +3,14 @@ package store
 import (
 	"container/list"
 	"fmt"
+	"sync"
 	"time"
 )
 
 type Store struct {
-	storage map[string]Value
+	storage           map[string]Value
+	listBlockChannels map[string][]chan string
+	mu                sync.Mutex
 }
 
 type Type string
@@ -50,7 +53,8 @@ var (
 
 func NewStore() (*Store, error) {
 	return &Store{
-		storage: make(map[string]Value),
+		storage:           make(map[string]Value),
+		listBlockChannels: make(map[string][]chan string),
 	}, nil
 }
 
@@ -85,8 +89,10 @@ func (s *Store) SetString(key string, data string, expiry time.Time) {
 }
 
 func (s *Store) PushList(key string, data []string, direction PushListDirection) (int, error) {
-	value, exists := s.storage[key]
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
+	value, exists := s.storage[key]
 	if exists {
 		if err := s.validateType(value, ValueTypeList); err != nil {
 			return 0, err
@@ -94,17 +100,17 @@ func (s *Store) PushList(key string, data []string, direction PushListDirection)
 	}
 
 	var listVal *list.List
-
 	if !exists || s.isExpired(value) {
 		listVal = list.New()
 	} else {
-		existingListValue, ok := value.Data.(ListValue)
-		if !ok || existingListValue.Data == nil {
+		existing, ok := value.Data.(ListValue)
+		if !ok || existing.Data == nil {
 			return 0, ErrInvalidData
 		}
-		listVal = existingListValue.Data
+		listVal = existing.Data
 	}
 
+	// Push data
 	if direction == RPush {
 		for _, item := range data {
 			listVal.PushBack(item)
@@ -121,6 +127,20 @@ func (s *Store) PushList(key string, data []string, direction PushListDirection)
 		Expiry: value.Expiry,
 	}
 
+	go func() {
+		// Wake up blocked clients (FIFO)
+		if chans, ok := s.listBlockChannels[key]; ok && len(chans) > 0 {
+			for len(chans) > 0 && listVal.Len() > 0 {
+				ch := chans[0]
+				chans = chans[1:]
+				front := listVal.Front()
+				str, _ := front.Value.(string)
+				listVal.Remove(front)
+				ch <- str
+			}
+			s.listBlockChannels[key] = chans
+		}
+	}()
 	return listVal.Len(), nil
 }
 
@@ -228,6 +248,46 @@ func (s *Store) ListPop(key string, count int) ([]string, error) {
 	return res, nil
 }
 
+func (s *Store) BlockListPop(key string) (<-chan string, error) {
+	doneChan := make(chan string, 1)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	value, exists := s.storage[key]
+	if exists {
+		if err := s.validateType(value, ValueTypeList); err != nil {
+			return nil, err
+		}
+
+		s.deleteIfExpired(key, value)
+
+		listVal, ok := value.Data.(ListValue)
+		if !ok {
+			return nil, ErrInvalidData
+		}
+
+		if listVal.Data.Len() > 0 {
+			// Pop immediately
+			front := listVal.Data.Front()
+			str, _ := front.Value.(string)
+			doneChan <- str
+			listVal.Data.Remove(front)
+
+			s.storage[key] = Value{
+				Data:   listVal,
+				Type:   ValueTypeList,
+				Expiry: value.Expiry,
+			}
+			return doneChan, nil
+		}
+	}
+
+	// No element — block
+	s.listBlockChannels[key] = append(s.listBlockChannels[key], doneChan)
+	return doneChan, nil
+}
+
 func (s *Store) GetListLen(key string) (int, error) {
 	value, exists := s.storage[key]
 
@@ -270,4 +330,22 @@ func (s *Store) Get(key string) (string, bool, error) {
 	}
 
 	return string(strVal), true, nil
+}
+
+func (s *Store) RemoveBlockedChannel(key string, ch <-chan string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	chans := s.listBlockChannels[key]
+	for i, c := range chans {
+		if c == ch {
+			// Remove from slice
+			s.listBlockChannels[key] = append(chans[:i], chans[i+1:]...)
+			break
+		}
+	}
+	// Cleanup empty entry
+	if len(s.listBlockChannels[key]) == 0 {
+		delete(s.listBlockChannels, key)
+	}
 }
