@@ -64,6 +64,8 @@ func (app *App) handleConnection(conn net.Conn) {
 			app.handleLPop(conn, cmd)
 		case "BLPOP":
 			app.handleBLPop(conn, cmd)
+		case "TYPE":
+			app.handleGetType(conn, cmd)
 		default:
 			conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 		}
@@ -253,6 +255,17 @@ func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
 		app.store.RemoveBlockedChannel(key, doneChan)
 		conn.Write(parser.EncodeNullArray())
 	}
+}
+
+func (app *App) handleGetType(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 1 {
+		conn.Write(parser.EncodeWrongNumArgsError("type"))
+		return
+	}
+
+	t := app.store.GetType(cmd.Args[0])
+
+	conn.Write(parser.EncodeString(t))
 }
 
 func parseExpiry(cmd *parser.Command) (time.Time, error) {

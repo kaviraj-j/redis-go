@@ -332,6 +332,14 @@ func (s *Store) Get(key string) (string, bool, error) {
 	return string(strVal), true, nil
 }
 
+func (s *Store) GetType(key string) string {
+	val, ok := s.storage[key]
+	if !ok {
+		return "none"
+	}
+	return string(val.Type)
+}
+
 func (s *Store) RemoveBlockedChannel(key string, ch <-chan string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
