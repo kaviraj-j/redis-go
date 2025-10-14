@@ -18,6 +18,7 @@ type Type string
 const (
 	ValueTypeString Type = "string"
 	ValueTypeList   Type = "list"
+	ValueTypeStream Type = "stream"
 )
 
 type ValueType interface {
@@ -37,8 +38,11 @@ const (
 	LPush PushListDirection = "LPUSH"
 )
 
+type StreamValue struct{}
+
 func (StringValue) isValueType() {}
 func (ListValue) isValueType()   {}
+func (StreamValue) isValueType() {}
 
 type Value struct {
 	Data   ValueType
@@ -308,6 +312,22 @@ func (s *Store) GetListLen(key string) (int, error) {
 		return 0, ErrInvalidData
 	}
 	return listValues.Data.Len(), nil
+}
+
+// ======== stream =========
+func (s *Store) XAdd(key string, id string) error {
+	value, exists := s.storage[key]
+	if exists {
+		if err := s.validateType(value, ValueTypeStream); err != nil {
+			return err
+		}
+	} else {
+		s.storage[key] = Value{
+			Type: ValueTypeStream,
+			Data: StreamValue{},
+		}
+	}
+	return nil
 }
 
 func (s *Store) Get(key string) (string, bool, error) {

@@ -66,6 +66,8 @@ func (app *App) handleConnection(conn net.Conn) {
 			app.handleBLPop(conn, cmd)
 		case "TYPE":
 			app.handleGetType(conn, cmd)
+		case "XADD":
+			app.handleXAdd(conn, cmd)
 		default:
 			conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 		}
@@ -255,6 +257,19 @@ func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
 		app.store.RemoveBlockedChannel(key, doneChan)
 		conn.Write(parser.EncodeNullArray())
 	}
+}
+
+func (app *App) handleXAdd(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 2 {
+		conn.Write(parser.EncodeWrongNumArgsError("xadd"))
+		return
+	}
+	err := app.store.XAdd(cmd.Args[0], cmd.Args[1])
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+	conn.Write(parser.EncodeBulkString(cmd.Args[1]))
 }
 
 func (app *App) handleGetType(conn net.Conn, cmd *parser.Command) {
