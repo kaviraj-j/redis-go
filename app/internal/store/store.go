@@ -38,7 +38,16 @@ const (
 	LPush PushListDirection = "LPUSH"
 )
 
-type StreamValue struct{}
+type StreamValue struct {
+	Entries  []StreamEntry
+	EntryMap map[string]*StreamEntry
+	LastID   string
+}
+
+type StreamEntry struct {
+	ID     string
+	Fields map[string]string
+}
 
 func (StringValue) isValueType() {}
 func (ListValue) isValueType()   {}
@@ -315,19 +324,81 @@ func (s *Store) GetListLen(key string) (int, error) {
 }
 
 // ======== stream =========
-func (s *Store) XAdd(key string, id string) error {
+func (s *Store) XAdd(key string, id string, fields map[string]string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	value, exists := s.storage[key]
 	if exists {
 		if err := s.validateType(value, ValueTypeStream); err != nil {
-			return err
+			return "", err
+		}
+		// if s.deleteIfExpired(key, value) {
+		// 	exists = false
+		// }
+	}
+
+	var stream StreamValue
+	if !exists {
+		stream = StreamValue{
+			Entries:  make([]StreamEntry, 0),
+			EntryMap: make(map[string]*StreamEntry),
 		}
 	} else {
-		s.storage[key] = Value{
-			Type: ValueTypeStream,
-			Data: StreamValue{},
+		existing, ok := value.Data.(StreamValue)
+		if !ok {
+			return "", ErrInvalidData
 		}
+		stream = existing
 	}
-	return nil
+
+	// --- Generate ID ---
+	if id == "*" || id == "" {
+		nowMillis := time.Now().UnixNano() / int64(time.Millisecond)
+
+		lastTime, lastSeq := parseStreamID(stream.LastID)
+		if nowMillis == lastTime {
+			// same millisecond — increment sequence
+			lastSeq++
+		} else {
+			// new millisecond — reset sequence
+			lastSeq = 0
+		}
+		id = fmt.Sprintf("%d-%d", nowMillis, lastSeq)
+	}
+
+	// --- Prevent Invalid entries ---
+	if id == "0-0" {
+		return "", fmt.Errorf("ERR The ID specified in XADD must be greater than 0-0")
+	}
+	if _, exists := stream.EntryMap[id]; exists || stream.LastID >= id {
+		return "", fmt.Errorf("ERR The ID specified in XADD is equal or smaller than the target stream top item")
+	}
+
+	// --- Append entry ---
+	entry := StreamEntry{
+		ID:     id,
+		Fields: fields,
+	}
+	stream.Entries = append(stream.Entries, entry)
+	stream.EntryMap[id] = &stream.Entries[len(stream.Entries)-1]
+	stream.LastID = id
+
+	s.storage[key] = Value{
+		Data: stream,
+		Type: ValueTypeStream,
+	}
+
+	return id, nil
+}
+
+func parseStreamID(id string) (int64, int64) {
+	if id == "" {
+		return 0, 0
+	}
+	var ts, seq int64
+	fmt.Sscanf(id, "%d-%d", &ts, &seq)
+	return ts, seq
 }
 
 func (s *Store) Get(key string) (string, bool, error) {

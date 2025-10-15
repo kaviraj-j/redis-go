@@ -264,12 +264,12 @@ func (app *App) handleXAdd(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeWrongNumArgsError("xadd"))
 		return
 	}
-	err := app.store.XAdd(cmd.Args[0], cmd.Args[1])
+	id, err := app.store.XAdd(cmd.Args[0], cmd.Args[1], map[string]string{})
 	if err != nil {
 		conn.Write(parser.EncodeError(err))
 		return
 	}
-	conn.Write(parser.EncodeBulkString(cmd.Args[1]))
+	conn.Write(parser.EncodeBulkString(id))
 }
 
 func (app *App) handleGetType(conn net.Conn, cmd *parser.Command) {
