@@ -372,20 +372,20 @@ func (s *Store) XAdd(key string, id string, fields map[string]string) (string, e
 		id = fmt.Sprintf("%d-%d", timestamp, lastSeq)
 
 	}
-	// --- Generate ID ---
-	// if id == "*" || id == "" {
-	// 	nowMillis := time.Now().UnixNano() / int64(time.Millisecond)
+	// --- Generate ID fully ---
+	if id == "*" {
+		nowMillis := time.Now().UnixNano() / int64(time.Millisecond)
 
-	// 	lastTime, lastSeq := parseStreamID(stream.LastID)
-	// 	if nowMillis == lastTime {
-	// 		// same millisecond — increment sequence
-	// 		lastSeq++
-	// 	} else {
-	// 		// new millisecond — reset sequence
-	// 		lastSeq = 0
-	// 	}
-	// 	id = fmt.Sprintf("%d-%d", nowMillis, lastSeq)
-	// }
+		lastTime, lastSeq := parseStreamID(stream.LastID)
+		if nowMillis == lastTime {
+			// same millisecond — increment sequence
+			lastSeq++
+		} else {
+			// new millisecond — reset sequence
+			lastSeq = 0
+		}
+		id = fmt.Sprintf("%d-%d", nowMillis, lastSeq)
+	}
 
 	// --- Prevent Invalid entries ---
 	if id == "0-0" {
