@@ -3,6 +3,8 @@ package store
 import (
 	"container/list"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -351,21 +353,39 @@ func (s *Store) XAdd(key string, id string, fields map[string]string) (string, e
 		}
 		stream = existing
 	}
-
-	// --- Generate ID ---
-	if id == "*" || id == "" {
-		nowMillis := time.Now().UnixNano() / int64(time.Millisecond)
+	idParts := strings.Split(id, "-")
+	if len(idParts) == 2 && idParts[1] == "*" {
+		timestamp, err := strconv.Atoi(idParts[0])
+		if err != nil {
+			return "", err
+		}
 
 		lastTime, lastSeq := parseStreamID(stream.LastID)
-		if nowMillis == lastTime {
-			// same millisecond — increment sequence
+		if lastTime > int64(timestamp) {
+			return "", fmt.Errorf("ERR The ID specified in XADD is equal or smaller than the target stream top item")
+		}
+		if lastTime == int64(timestamp) {
 			lastSeq++
 		} else {
-			// new millisecond — reset sequence
 			lastSeq = 0
 		}
-		id = fmt.Sprintf("%d-%d", nowMillis, lastSeq)
+		id = fmt.Sprintf("%d-%d", timestamp, lastSeq)
+
 	}
+	// --- Generate ID ---
+	// if id == "*" || id == "" {
+	// 	nowMillis := time.Now().UnixNano() / int64(time.Millisecond)
+
+	// 	lastTime, lastSeq := parseStreamID(stream.LastID)
+	// 	if nowMillis == lastTime {
+	// 		// same millisecond — increment sequence
+	// 		lastSeq++
+	// 	} else {
+	// 		// new millisecond — reset sequence
+	// 		lastSeq = 0
+	// 	}
+	// 	id = fmt.Sprintf("%d-%d", nowMillis, lastSeq)
+	// }
 
 	// --- Prevent Invalid entries ---
 	if id == "0-0" {
