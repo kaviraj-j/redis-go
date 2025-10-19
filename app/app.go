@@ -70,6 +70,8 @@ func (app *App) handleConnection(conn net.Conn) {
 			app.handleXAdd(conn, cmd)
 		case "XRANGE":
 			app.handleXRange(conn, cmd)
+		case "XREAD":
+			app.handleXRead(conn, cmd)
 		default:
 			conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 		}
@@ -304,6 +306,46 @@ func (app *App) handleXRange(conn net.Conn, cmd *parser.Command) {
 		// write the key values pairs
 		conn.Write(parser.EncodeArray(entry[1:]))
 	}
+}
+
+func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 3 {
+		conn.Write(parser.EncodeWrongNumArgsError("xread"))
+		return
+	}
+	if cmd.Args[0] != "streams" {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR first arg must be 'STREAM'")))
+		return
+	}
+	fmt.Println("cmds args", cmd.Args)
+	keysAndIds := cmd.Args[1:]
+	fmt.Println("keys and ids", keysAndIds)
+	if len(keysAndIds)%2 != 0 {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
+		return
+	}
+	keyMap := make(map[string]string)
+	halfLen := len(keysAndIds) / 2
+	for i := 0; i < halfLen; i++ {
+		keyMap[keysAndIds[i]] = keysAndIds[halfLen+i]
+	}
+	res, err := app.store.XRead(keyMap)
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(res))))
+	for _, r := range res {
+		conn.Write([]byte("*2\r\n"))
+		conn.Write(parser.EncodeBulkString(r.Key))
+		conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(r.Entries))))
+		for _, entry := range r.Entries {
+			conn.Write([]byte("*2\r\n"))
+			conn.Write(parser.EncodeBulkString(entry.Id))
+			conn.Write(parser.EncodeArray(entry.KeyValue))
+		}
+	}
+
 }
 
 func (app *App) handleGetType(conn net.Conn, cmd *parser.Command) {

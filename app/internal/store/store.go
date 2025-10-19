@@ -61,6 +61,15 @@ type Value struct {
 	Expiry time.Time
 }
 
+// ---- Response Return Types ----
+type XReadResponse struct {
+	Key     string
+	Entries []struct {
+		Id       string
+		KeyValue []string
+	}
+}
+
 var (
 	ErrWrongType   = fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	ErrInvalidData = fmt.Errorf("ERR invalid data structure")
@@ -455,6 +464,49 @@ func (s *Store) XRange(key string, start string, end string) ([][]string, error)
 	}
 
 	return results, nil
+}
+
+func (s *Store) XRead(keysMap map[string]string) ([]XReadResponse, error) {
+	res := make([]XReadResponse, 0, len(keysMap))
+	for key, id := range keysMap {
+		entries := []struct {
+			Id       string
+			KeyValue []string
+		}{}
+
+		val, ok := s.storage[key]
+		if !ok || s.deleteIfExpired(key, val) {
+			continue
+		}
+		if err := s.validateType(val, ValueTypeStream); err != nil {
+			return []XReadResponse{}, err
+		}
+
+		streamVal, _ := val.Data.(StreamValue)
+		startTimeStamp, startSeq := parseStreamID(id)
+		for _, entry := range streamVal.Entries {
+			timestamp, seq := parseStreamID(entry.ID)
+			if timestamp > startTimeStamp || (timestamp == startTimeStamp && seq >= startSeq) {
+				fields := make([]string, 0, len(entry.Fields)*2)
+				for k, v := range entry.Fields {
+					fields = append(fields, k, v)
+				}
+				entries = append(entries, struct {
+					Id       string
+					KeyValue []string
+				}{
+					Id:       entry.ID,
+					KeyValue: fields,
+				})
+			}
+		}
+		res = append(res, XReadResponse{
+			Key:     key,
+			Entries: entries,
+		})
+
+	}
+	return res, nil
 }
 
 func parseStreamID(id string) (int64, int64) {
