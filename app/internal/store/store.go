@@ -412,6 +412,51 @@ func (s *Store) XAdd(key string, id string, fields map[string]string) (string, e
 	return id, nil
 }
 
+func (s *Store) XRange(key string, start string, end string) ([][]string, error) {
+	val, ok := s.storage[key]
+	if !ok {
+		return [][]string{}, nil
+	}
+	if err := s.validateType(val, ValueTypeStream); err != nil {
+		return [][]string{}, err
+	}
+
+	if s.deleteIfExpired(key, val) {
+		return [][]string{}, nil
+	}
+
+	streamVal, _ := val.Data.(StreamValue)
+
+	// Handle special cases: "-" means smallest, "+" means largest
+	startTimeStamp, startSeq := int64(0), int64(0)
+	if start != "-" {
+		startTimeStamp, startSeq = parseStreamID(start)
+	}
+
+	endTimeStamp, endSeq := int64(1<<63-1), int64(1<<63-1)
+	if end != "+" {
+		endTimeStamp, endSeq = parseStreamID(end)
+	}
+
+	results := [][]string{}
+
+	for _, entry := range streamVal.Entries {
+		ts, seq := parseStreamID(entry.ID)
+
+		if (ts > startTimeStamp || (ts == startTimeStamp && seq >= startSeq)) &&
+			(ts < endTimeStamp || (ts == endTimeStamp && seq <= endSeq)) {
+
+			arr := []string{entry.ID}
+			for field, val := range entry.Fields {
+				arr = append(arr, field, val)
+			}
+			results = append(results, arr)
+		}
+	}
+
+	return results, nil
+}
+
 func parseStreamID(id string) (int64, int64) {
 	if id == "" {
 		return 0, 0

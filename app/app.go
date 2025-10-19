@@ -68,6 +68,8 @@ func (app *App) handleConnection(conn net.Conn) {
 			app.handleGetType(conn, cmd)
 		case "XADD":
 			app.handleXAdd(conn, cmd)
+		case "XRANGE":
+			app.handleXRange(conn, cmd)
 		default:
 			conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 		}
@@ -264,12 +266,44 @@ func (app *App) handleXAdd(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeWrongNumArgsError("xadd"))
 		return
 	}
-	id, err := app.store.XAdd(cmd.Args[0], cmd.Args[1], map[string]string{})
+	fields := make(map[string]string)
+	fieldData := cmd.Args[2:]
+	if len(fieldData)%2 != 0 {
+		conn.Write(parser.EncodeWrongNumArgsError("xadd"))
+		return
+	}
+	for i := 0; i < len(fieldData); i += 2 {
+		k, v := fieldData[i], fieldData[i+1]
+		fields[k] = v
+	}
+	id, err := app.store.XAdd(cmd.Args[0], cmd.Args[1], fields)
 	if err != nil {
 		conn.Write(parser.EncodeError(err))
 		return
 	}
 	conn.Write(parser.EncodeBulkString(id))
+}
+
+func (app *App) handleXRange(conn net.Conn, cmd *parser.Command) {
+	if len(cmd.Args) < 3 {
+		conn.Write(parser.EncodeWrongNumArgsError("xrange"))
+		return
+	}
+
+	res, err := app.store.XRange(cmd.Args[0], cmd.Args[1], cmd.Args[2])
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+		return
+	}
+
+	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(res))))
+	for _, entry := range res {
+		conn.Write([]byte("*2\r\n"))
+		// write the id
+		conn.Write(parser.EncodeBulkString(entry[0]))
+		// write the key values pairs
+		conn.Write(parser.EncodeArray(entry[1:]))
+	}
 }
 
 func (app *App) handleGetType(conn net.Conn, cmd *parser.Command) {
