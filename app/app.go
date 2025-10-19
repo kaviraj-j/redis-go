@@ -232,7 +232,6 @@ func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
 	timeoutStr := cmd.Args[1]
 
 	timeoutSec, err := strconv.ParseFloat(timeoutStr, 64)
-	fmt.Println("timeoutSec", timeoutSec)
 	if err != nil {
 		conn.Write(parser.EncodeError(fmt.Errorf("ERR timeout is not a float")))
 		return
@@ -258,7 +257,7 @@ func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeArray(response))
 	case <-time.After(time.Duration(timeoutSec * float64(time.Second))):
 		// Timeout
-		app.store.RemoveBlockedChannel(key, doneChan)
+		app.store.RemoveBlockedListChannel(key, doneChan)
 		conn.Write(parser.EncodeNullArray())
 	}
 }
@@ -313,13 +312,15 @@ func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeWrongNumArgsError("xread"))
 		return
 	}
-	if cmd.Args[0] != "streams" {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR first arg must be 'STREAM'")))
+	if cmd.Args[0] == "streams" {
+		app.handleXReadBlocked(conn, cmd)
 		return
 	}
-	fmt.Println("cmds args", cmd.Args)
+	if cmd.Args[0] != "streams" {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR first arg must be 'STREAM' or 'BLOCK'")))
+		return
+	}
 	keysAndIds := cmd.Args[1:]
-	fmt.Println("keys and ids", keysAndIds)
 	if len(keysAndIds)%2 != 0 {
 		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
 		return
@@ -334,16 +335,42 @@ func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeError(err))
 		return
 	}
-	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(res))))
-	for _, r := range res {
-		conn.Write([]byte("*2\r\n"))
-		conn.Write(parser.EncodeBulkString(r.Key))
-		conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(r.Entries))))
-		for _, entry := range r.Entries {
-			conn.Write([]byte("*2\r\n"))
-			conn.Write(parser.EncodeBulkString(entry.Id))
-			conn.Write(parser.EncodeArray(entry.KeyValue))
-		}
+	writeStreamReadData(conn, res)
+}
+
+func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
+
+	waitUntilMs, _ := strconv.Atoi(cmd.Args[1])
+	if cmd.Args[2] != "streams" {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR missing arg 'streams'")))
+		return
+	}
+	keysAndIds := cmd.Args[3:]
+	if len(keysAndIds)%2 != 0 {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
+		return
+	}
+	keyMap := make(map[string]string)
+	halfLen := len(keysAndIds) / 2
+	for i := 0; i < halfLen; i++ {
+		keyMap[keysAndIds[i]] = keysAndIds[halfLen+i]
+	}
+	doneChan, err := app.store.XReadBlocked(keyMap)
+	if err != nil {
+		conn.Write(parser.EncodeError(err))
+	}
+	if waitUntilMs == 0 {
+		// wait indefinitely
+		response := <-doneChan
+		writeStreamReadData(conn, response)
+		return
+	}
+
+	select {
+	case response := <-doneChan:
+		writeStreamReadData(conn, response)
+	case <-time.After(time.Duration(waitUntilMs) * time.Millisecond):
+		conn.Write(parser.EncodeNullBulkString())
 	}
 
 }
@@ -382,4 +409,19 @@ func parseExpiry(cmd *parser.Command) (time.Time, error) {
 	}
 
 	return expiry, nil
+}
+
+// ---- helpers ----
+func writeStreamReadData(conn net.Conn, response []store.XReadResponse) {
+	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(response))))
+	for _, r := range response {
+		conn.Write([]byte("*2\r\n"))
+		conn.Write(parser.EncodeBulkString(r.Key))
+		conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(r.Entries))))
+		for _, entry := range r.Entries {
+			conn.Write([]byte("*2\r\n"))
+			conn.Write(parser.EncodeBulkString(entry.Id))
+			conn.Write(parser.EncodeArray(entry.KeyValue))
+		}
+	}
 }
