@@ -325,50 +325,55 @@ func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
 		return
 	}
-	keyMap := make(map[string]string)
+
 	halfLen := len(keysAndIds) / 2
-	for i := 0; i < halfLen; i++ {
-		keyMap[keysAndIds[i]] = keysAndIds[halfLen+i]
-	}
-	res, err := app.store.XRead(keyMap)
+	keys := keysAndIds[:halfLen]
+	ids := keysAndIds[halfLen:]
+
+	res, err := app.store.XRead(keys, ids)
 	if err != nil {
 		conn.Write(parser.EncodeError(err))
 		return
 	}
 	writeStreamReadData(conn, res)
 }
-
 func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
-
 	waitUntilMs, _ := strconv.Atoi(cmd.Args[1])
 	if strings.ToUpper(cmd.Args[2]) != "STREAMS" {
 		conn.Write(parser.EncodeError(fmt.Errorf("ERR missing arg 'STREAMS'")))
 		return
 	}
+
 	keysAndIds := cmd.Args[3:]
 	waitForNewEntry := false
 	if keysAndIds[len(keysAndIds)-1] == "$" {
 		waitForNewEntry = true
 	}
+
 	if !waitForNewEntry && len(keysAndIds)%2 != 0 {
 		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
 		return
 	}
-	keyMap := make(map[string]string)
+
+	// Preserve key order in a slice
+	var keys []string
+	var ids []string
 	if !waitForNewEntry {
 		halfLen := len(keysAndIds) / 2
-		for i := 0; i < halfLen; i++ {
-			keyMap[keysAndIds[i]] = keysAndIds[halfLen+i]
-		}
+		keys = keysAndIds[:halfLen]
+		ids = keysAndIds[halfLen:]
+
 	} else {
-		for i := 0; i < len(keysAndIds)-1; i++ {
-			keyMap[keysAndIds[i]] = ""
-		}
+		keys = keysAndIds[:len(keysAndIds)-1]
+		ids = make([]string, len(keys))
 	}
-	doneChan, err := app.store.XReadBlocked(keyMap, waitForNewEntry)
+
+	doneChan, err := app.store.XReadBlocked(keys, ids, waitForNewEntry)
 	if err != nil {
 		conn.Write(parser.EncodeError(err))
+		return
 	}
+
 	if waitUntilMs == 0 {
 		// wait indefinitely
 		response := <-doneChan
@@ -378,20 +383,18 @@ func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
 
 	select {
 	case response := <-doneChan:
-		for key := range keyMap {
+		for _, key := range keys {
 			app.store.RemoveBlockedStreamChannel(key, doneChan)
 		}
 		writeStreamReadData(conn, response)
 	case <-time.After(time.Duration(waitUntilMs) * time.Millisecond):
-
 		conn.Write(parser.EncodeNullArray())
 		go func() {
-			for key := range keyMap {
+			for _, key := range keys {
 				app.store.RemoveBlockedStreamChannel(key, doneChan)
 			}
 		}()
 	}
-
 }
 
 func (app *App) handleGetType(conn net.Conn, cmd *parser.Command) {

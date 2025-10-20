@@ -149,9 +149,10 @@ func (s *Store) XRange(key string, start string, end string) ([][]string, error)
 	return results, nil
 }
 
-func (s *Store) XRead(keysMap map[string]string) ([]XReadResponse, error) {
-	res := make([]XReadResponse, 0, len(keysMap))
-	for key, id := range keysMap {
+func (s *Store) XRead(keys []string, ids []string) ([]XReadResponse, error) {
+	res := make([]XReadResponse, 0, len(keys))
+	for i, key := range keys {
+		id := ids[i]
 		entries := []struct {
 			Id       string
 			KeyValue []string
@@ -189,17 +190,17 @@ func (s *Store) XRead(keysMap map[string]string) ([]XReadResponse, error) {
 				Entries: entries,
 			})
 		}
-
 	}
 	return res, nil
 }
 
-func (s *Store) XReadBlocked(keysMap map[string]string, waitForNewEntry bool) (<-chan []XReadResponse, error) {
+func (s *Store) XReadBlocked(keys []string, ids []string, waitForNewEntry bool) (<-chan []XReadResponse, error) {
 	xReadChan := make(chan []XReadResponse, 1)
 	var result []XReadResponse
 	var err error
+
 	if !waitForNewEntry {
-		result, err = s.XRead(keysMap)
+		result, err = s.XRead(keys, ids)
 		if err != nil {
 			return nil, err
 		}
@@ -208,11 +209,12 @@ func (s *Store) XReadBlocked(keysMap map[string]string, waitForNewEntry bool) (<
 			return xReadChan, nil
 		}
 	} else {
-		s.getLastIds(keysMap)
+		s.getLastIdsForKeys(keys, ids)
 	}
-	// no data available -> block and add to queue
+
 	s.mu.Lock()
-	for key, id := range keysMap {
+	for i, key := range keys {
+		id := ids[i]
 		s.streamBlockedClients[key] = append(s.streamBlockedClients[key], StreamBlockedClients{
 			id: id,
 			ch: xReadChan,
@@ -223,28 +225,22 @@ func (s *Store) XReadBlocked(keysMap map[string]string, waitForNewEntry bool) (<
 	return xReadChan, nil
 }
 
-func (s *Store) getLastIds(keysMap map[string]string) {
-
+func (s *Store) getLastIdsForKeys(keys []string, ids []string) {
 	s.mu.Lock()
-	// get the last element of all the keys
-	for key := range keysMap {
+	for i, key := range keys {
 		val, ok := s.storage[key]
 		if !ok || s.deleteIfExpired(key, val) {
-			ok = false
+			ids[i] = "0-0"
+			continue
 		}
 		if err := s.validateType(val, ValueTypeStream); err != nil {
-			ok = false
+			ids[i] = "0-0"
+			continue
 		}
-
 		streamVal, _ := val.Data.(StreamValue)
-		id := "0-0"
-		if ok {
-			id = streamVal.LastID
-		}
-		keysMap[key] = id
+		ids[i] = streamVal.LastID
 	}
 	s.mu.Unlock()
-
 }
 
 func (s *Store) notifyStreamBlockers(key string) {
@@ -258,7 +254,7 @@ func (s *Store) notifyStreamBlockers(key string) {
 	newBlockedClients := make([]StreamBlockedClients, 0)
 	for _, client := range blockedClients {
 		s.mu.Lock()
-		res, err := s.XRead(map[string]string{key: client.id})
+		res, err := s.XRead([]string{key}, []string{client.id})
 		if err != nil || len(res) == 0 {
 			newBlockedClients = append(newBlockedClients, client)
 			s.mu.Unlock()
