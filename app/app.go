@@ -346,16 +346,26 @@ func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
 		return
 	}
 	keysAndIds := cmd.Args[3:]
-	if len(keysAndIds)%2 != 0 {
+	waitForNewEntry := false
+	if keysAndIds[len(keysAndIds)-1] == "$" {
+		waitForNewEntry = true
+	}
+	if !waitForNewEntry && len(keysAndIds)%2 != 0 {
 		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
 		return
 	}
 	keyMap := make(map[string]string)
-	halfLen := len(keysAndIds) / 2
-	for i := 0; i < halfLen; i++ {
-		keyMap[keysAndIds[i]] = keysAndIds[halfLen+i]
+	if !waitForNewEntry {
+		halfLen := len(keysAndIds) / 2
+		for i := 0; i < halfLen; i++ {
+			keyMap[keysAndIds[i]] = keysAndIds[halfLen+i]
+		}
+	} else {
+		for i := 0; i < len(keysAndIds)-1; i++ {
+			keyMap[keysAndIds[i]] = ""
+		}
 	}
-	doneChan, err := app.store.XReadBlocked(keyMap)
+	doneChan, err := app.store.XReadBlocked(keyMap, waitForNewEntry)
 	if err != nil {
 		conn.Write(parser.EncodeError(err))
 	}

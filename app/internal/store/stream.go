@@ -194,18 +194,22 @@ func (s *Store) XRead(keysMap map[string]string) ([]XReadResponse, error) {
 	return res, nil
 }
 
-func (s *Store) XReadBlocked(keysMap map[string]string) (<-chan []XReadResponse, error) {
+func (s *Store) XReadBlocked(keysMap map[string]string, waitForNewEntry bool) (<-chan []XReadResponse, error) {
 	xReadChan := make(chan []XReadResponse, 1)
-
-	result, err := s.XRead(keysMap)
-	if err != nil {
-		return nil, err
+	var result []XReadResponse
+	var err error
+	if !waitForNewEntry {
+		result, err = s.XRead(keysMap)
+		if err != nil {
+			return nil, err
+		}
+		if len(result) > 0 {
+			xReadChan <- result
+			return xReadChan, nil
+		}
+	} else {
+		s.getLastIds(keysMap)
 	}
-	if len(result) > 0 {
-		xReadChan <- result
-		return xReadChan, nil
-	}
-
 	// no data available -> block and add to queue
 	s.mu.Lock()
 	for key, id := range keysMap {
@@ -217,6 +221,30 @@ func (s *Store) XReadBlocked(keysMap map[string]string) (<-chan []XReadResponse,
 	s.mu.Unlock()
 
 	return xReadChan, nil
+}
+
+func (s *Store) getLastIds(keysMap map[string]string) {
+
+	s.mu.Lock()
+	// get the last element of all the keys
+	for key := range keysMap {
+		val, ok := s.storage[key]
+		if !ok || s.deleteIfExpired(key, val) {
+			ok = false
+		}
+		if err := s.validateType(val, ValueTypeStream); err != nil {
+			ok = false
+		}
+
+		streamVal, _ := val.Data.(StreamValue)
+		id := "0-0"
+		if ok {
+			id = streamVal.LastID
+		}
+		keysMap[key] = id
+	}
+	s.mu.Unlock()
+
 }
 
 func (s *Store) notifyStreamBlockers(key string) {
