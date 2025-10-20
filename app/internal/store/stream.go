@@ -98,6 +98,9 @@ func (s *Store) XAdd(key string, id string, fields map[string]string) (string, e
 		Type: ValueTypeStream,
 	}
 
+	// notify blocked clients
+	go s.notifyStreamBlockers(key)
+
 	return id, nil
 }
 
@@ -166,7 +169,7 @@ func (s *Store) XRead(keysMap map[string]string) ([]XReadResponse, error) {
 		startTimeStamp, startSeq := parseStreamID(id)
 		for _, entry := range streamVal.Entries {
 			timestamp, seq := parseStreamID(entry.ID)
-			if timestamp > startTimeStamp || (timestamp == startTimeStamp && seq >= startSeq) {
+			if timestamp > startTimeStamp || (timestamp == startTimeStamp && seq > startSeq) {
 				fields := make([]string, 0, len(entry.Fields)*2)
 				for k, v := range entry.Fields {
 					fields = append(fields, k, v)
@@ -180,17 +183,20 @@ func (s *Store) XRead(keysMap map[string]string) ([]XReadResponse, error) {
 				})
 			}
 		}
-		res = append(res, XReadResponse{
-			Key:     key,
-			Entries: entries,
-		})
+		if len(entries) > 0 {
+			res = append(res, XReadResponse{
+				Key:     key,
+				Entries: entries,
+			})
+		}
 
 	}
 	return res, nil
 }
 
 func (s *Store) XReadBlocked(keysMap map[string]string) (<-chan []XReadResponse, error) {
-	xReadChan := make(chan []XReadResponse)
+	xReadChan := make(chan []XReadResponse, 1)
+
 	result, err := s.XRead(keysMap)
 	if err != nil {
 		return nil, err
@@ -199,10 +205,73 @@ func (s *Store) XReadBlocked(keysMap map[string]string) (<-chan []XReadResponse,
 		xReadChan <- result
 		return xReadChan, nil
 	}
-	go func() {
-		// put request in queue
-	}()
+
+	// no data available -> block and add to queue
+	s.mu.Lock()
+	for key, id := range keysMap {
+		s.streamBlockedClients[key] = append(s.streamBlockedClients[key], StreamBlockedClients{
+			id: id,
+			ch: xReadChan,
+		})
+	}
+	s.mu.Unlock()
+
 	return xReadChan, nil
+}
+
+func (s *Store) notifyStreamBlockers(key string) {
+	s.mu.Lock()
+	blockedClients, ok := s.streamBlockedClients[key]
+	if !ok || len(blockedClients) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	newBlockedClients := make([]StreamBlockedClients, 0)
+	for _, client := range blockedClients {
+		s.mu.Lock()
+		res, err := s.XRead(map[string]string{key: client.id})
+		if err != nil || len(res) == 0 {
+			newBlockedClients = append(newBlockedClients, client)
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
+
+		client.ch <- res
+
+		close(client.ch)
+
+	}
+	s.mu.Lock()
+	if len(newBlockedClients) == 0 {
+		delete(s.streamBlockedClients, key)
+	} else {
+		s.streamBlockedClients[key] = newBlockedClients
+	}
+	s.mu.Unlock()
+}
+
+func (s *Store) RemoveBlockedStreamChannel(key string, target <-chan []XReadResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	blockedClients, ok := s.streamBlockedClients[key]
+	if !ok {
+		return
+	}
+
+	newBlockedClients := make([]StreamBlockedClients, 0, len(blockedClients))
+	for _, client := range blockedClients {
+		if client.ch != target {
+			newBlockedClients = append(newBlockedClients, client)
+		}
+	}
+	if len(newBlockedClients) == 0 {
+		delete(s.streamBlockedClients, key)
+	} else {
+		s.streamBlockedClients[key] = newBlockedClients
+	}
 }
 
 func parseStreamID(id string) (int64, int64) {

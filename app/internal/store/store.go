@@ -8,10 +8,10 @@ import (
 )
 
 type Store struct {
-	storage             map[string]Value
-	listBlockChannels   map[string][]chan string
-	streamBlockChannels map[string][]chan []XReadResponse
-	mu                  sync.Mutex
+	storage              map[string]Value
+	listBlockChannels    map[string][]chan string
+	streamBlockedClients map[string][]StreamBlockedClients
+	mu                   sync.Mutex
 }
 
 type Type string
@@ -67,10 +67,15 @@ var (
 
 func NewStore() (*Store, error) {
 	return &Store{
-		storage:             make(map[string]Value),
-		listBlockChannels:   make(map[string][]chan string),
-		streamBlockChannels: make(map[string][]chan []XReadResponse),
+		storage:              make(map[string]Value),
+		listBlockChannels:    make(map[string][]chan string),
+		streamBlockedClients: make(map[string][]StreamBlockedClients),
 	}, nil
+}
+
+type StreamBlockedClients struct {
+	ch chan []XReadResponse
+	id string
 }
 
 func (s *Store) GetType(key string) string {

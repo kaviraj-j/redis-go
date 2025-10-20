@@ -312,12 +312,12 @@ func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeWrongNumArgsError("xread"))
 		return
 	}
-	if cmd.Args[0] == "streams" {
+	if strings.ToUpper(cmd.Args[0]) == "BLOCK" {
 		app.handleXReadBlocked(conn, cmd)
 		return
 	}
-	if cmd.Args[0] != "streams" {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR first arg must be 'STREAM' or 'BLOCK'")))
+	if strings.ToUpper(cmd.Args[0]) != "STREAMS" {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR first arg must be 'STREAMS' or 'BLOCK'")))
 		return
 	}
 	keysAndIds := cmd.Args[1:]
@@ -341,8 +341,8 @@ func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
 func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
 
 	waitUntilMs, _ := strconv.Atoi(cmd.Args[1])
-	if cmd.Args[2] != "streams" {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR missing arg 'streams'")))
+	if strings.ToUpper(cmd.Args[2]) != "STREAMS" {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR missing arg 'STREAMS'")))
 		return
 	}
 	keysAndIds := cmd.Args[3:]
@@ -368,9 +368,18 @@ func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
 
 	select {
 	case response := <-doneChan:
+		for key := range keyMap {
+			app.store.RemoveBlockedStreamChannel(key, doneChan)
+		}
 		writeStreamReadData(conn, response)
 	case <-time.After(time.Duration(waitUntilMs) * time.Millisecond):
-		conn.Write(parser.EncodeNullBulkString())
+
+		conn.Write(parser.EncodeNullArray())
+		go func() {
+			for key := range keyMap {
+				app.store.RemoveBlockedStreamChannel(key, doneChan)
+			}
+		}()
 	}
 
 }
