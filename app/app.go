@@ -54,8 +54,6 @@ func (app *App) handleConnection(conn net.Conn) {
 			app.handleSet(conn, cmd)
 		case "GET":
 			app.handleGet(conn, cmd)
-		case "INCR":
-			app.handleIncrement(conn, cmd)
 		case "RPUSH", "LPUSH":
 			app.handlePush(conn, cmd)
 		case "LRANGE":
@@ -126,27 +124,7 @@ func (app *App) handleGet(conn net.Conn, cmd *parser.Command) {
 		return
 	}
 
-	// check if integer
-	valInt, err := strconv.Atoi(valStr)
-	if err == nil {
-		conn.Write([]byte(fmt.Sprintf(":%d\r\n", valInt)))
-	} else {
-		conn.Write(parser.EncodeBulkString(valStr))
-	}
-}
-
-func (app *App) handleIncrement(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 1 {
-		conn.Write(parser.EncodeWrongNumArgsError("incr"))
-		return
-	}
-
-	n, err := app.store.Increment(cmd.Args[0])
-	if err != nil {
-		conn.Write(parser.EncodeError(err))
-		return
-	}
-	conn.Write([]byte(fmt.Sprintf(":%d\r\n", n)))
+	conn.Write(parser.EncodeBulkString(valStr))
 }
 
 func (app *App) handlePush(conn net.Conn, cmd *parser.Command) {
