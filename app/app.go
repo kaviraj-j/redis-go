@@ -31,6 +31,9 @@ func (app *App) handleConnection(conn net.Conn) {
 
 	reader := bufio.NewReader(conn)
 
+	isQueued := false
+	cmdQueue := make([]*parser.Command, 0)
+
 	for {
 		cmd, err := parser.ParseRequest(reader)
 		if err != nil {
@@ -45,38 +48,77 @@ func (app *App) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		switch strings.ToUpper(cmd.Name) {
-		case "PING":
-			app.handlePing(conn)
-		case "ECHO":
-			app.handleEcho(conn, cmd)
-		case "SET":
-			app.handleSet(conn, cmd)
-		case "GET":
-			app.handleGet(conn, cmd)
-		case "INCR":
-			app.handleIncrement(conn, cmd)
-		case "RPUSH", "LPUSH":
-			app.handlePush(conn, cmd)
-		case "LRANGE":
-			app.handleLRange(conn, cmd)
-		case "LLEN":
-			app.handleLLen(conn, cmd)
-		case "LPOP":
-			app.handleLPop(conn, cmd)
-		case "BLPOP":
-			app.handleBLPop(conn, cmd)
-		case "TYPE":
-			app.handleGetType(conn, cmd)
-		case "XADD":
-			app.handleXAdd(conn, cmd)
-		case "XRANGE":
-			app.handleXRange(conn, cmd)
-		case "XREAD":
-			app.handleXRead(conn, cmd)
-		default:
-			conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
+		cmdUpper := strings.ToUpper(cmd.Name)
+
+		// Handle MULTI command
+		if cmdUpper == "MULTI" {
+			if isQueued {
+				conn.Write(parser.EncodeError(fmt.Errorf("ERR cmds are queued already")))
+				continue
+			}
+			isQueued = true
+			cmdQueue = make([]*parser.Command, 0)
+			conn.Write(parser.EncodeString("OK"))
+			continue
 		}
+
+		if cmdUpper == "EXEC" {
+			if !isQueued {
+				conn.Write(parser.EncodeError(fmt.Errorf("ERR EXEC without MULTI")))
+				continue
+			}
+
+			conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(cmdQueue))))
+			for _, queuedCmd := range cmdQueue {
+				app.executeCmd(conn, queuedCmd)
+			}
+
+			isQueued = false
+			cmdQueue = make([]*parser.Command, 0)
+			continue
+		}
+
+		if isQueued {
+			cmdQueue = append(cmdQueue, cmd)
+			conn.Write(parser.EncodeString("QUEUED"))
+		} else {
+			app.executeCmd(conn, cmd)
+		}
+	}
+}
+
+func (app *App) executeCmd(conn net.Conn, cmd *parser.Command) {
+	switch strings.ToUpper(cmd.Name) {
+	case "PING":
+		app.handlePing(conn)
+	case "ECHO":
+		app.handleEcho(conn, cmd)
+	case "SET":
+		app.handleSet(conn, cmd)
+	case "GET":
+		app.handleGet(conn, cmd)
+	case "INCR":
+		app.handleIncrement(conn, cmd)
+	case "RPUSH", "LPUSH":
+		app.handlePush(conn, cmd)
+	case "LRANGE":
+		app.handleLRange(conn, cmd)
+	case "LLEN":
+		app.handleLLen(conn, cmd)
+	case "LPOP":
+		app.handleLPop(conn, cmd)
+	case "BLPOP":
+		app.handleBLPop(conn, cmd)
+	case "TYPE":
+		app.handleGetType(conn, cmd)
+	case "XADD":
+		app.handleXAdd(conn, cmd)
+	case "XRANGE":
+		app.handleXRange(conn, cmd)
+	case "XREAD":
+		app.handleXRead(conn, cmd)
+	default:
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 	}
 }
 
