@@ -60,9 +60,7 @@ func (app *App) handleConnection(conn net.Conn) {
 			cmdQueue = make([]*parser.Command, 0)
 			conn.Write(parser.EncodeString("OK"))
 			continue
-		}
-
-		if cmdUpper == "EXEC" {
+		} else if cmdUpper == "EXEC" {
 			if !isQueued {
 				conn.Write(parser.EncodeError(fmt.Errorf("ERR EXEC without MULTI")))
 				continue
@@ -75,6 +73,15 @@ func (app *App) handleConnection(conn net.Conn) {
 
 			isQueued = false
 			cmdQueue = make([]*parser.Command, 0)
+			continue
+		} else if cmdUpper == "DISCARD" {
+			if !isQueued {
+				conn.Write(parser.EncodeError(fmt.Errorf("ERR DISCARD without MULTI")))
+				continue
+			}
+			isQueued = false
+			cmdQueue = make([]*parser.Command, 0)
+			conn.Write(parser.EncodeString("OK"))
 			continue
 		}
 
