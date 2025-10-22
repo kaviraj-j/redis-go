@@ -149,7 +149,9 @@ func (app *App) handleInfo(conn net.Conn, cmd *parser.Command) {
 		if len(app.config.replicaOf) > 0 {
 			role = "slave"
 		}
-		conn.Write(parser.EncodeBulkString("role:" + role))
+		content := fmt.Sprintf("role:%s\r\nmaster_repl_offset:%d\r\nmaster_replid:%s", role, 0, generateReplicationId())
+		conn.Write(parser.EncodeBulkString(content))
+		return
 	}
 	conn.Write(parser.EncodeNullBulkString())
 }
