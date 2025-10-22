@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,13 +16,19 @@ import (
 )
 
 type App struct {
-	store *store.Store
+	store  *store.Store
+	config Config
 }
 
-func newApp() *App {
+type Config struct {
+	replicaOf string
+}
+
+func newApp(config Config) *App {
 	s, _ := store.NewStore()
 	return &App{
-		store: s,
+		store:  s,
+		config: config,
 	}
 }
 
@@ -98,6 +105,8 @@ func (app *App) executeCmd(conn net.Conn, cmd *parser.Command) {
 	switch strings.ToUpper(cmd.Name) {
 	case "PING":
 		app.handlePing(conn)
+	case "INFO":
+		app.handleInfo(conn, cmd)
 	case "ECHO":
 		app.handleEcho(conn, cmd)
 	case "SET":
@@ -131,6 +140,18 @@ func (app *App) executeCmd(conn net.Conn, cmd *parser.Command) {
 
 func (app *App) handlePing(conn net.Conn) {
 	conn.Write(parser.EncodeString("PONG"))
+}
+
+func (app *App) handleInfo(conn net.Conn, cmd *parser.Command) {
+	includeReplication := slices.Index(cmd.Args, "replication") != -1
+	if includeReplication {
+		role := "master"
+		if len(app.config.replicaOf) > 0 {
+			role = "slave"
+		}
+		conn.Write(parser.EncodeBulkString("role:" + role))
+	}
+	conn.Write(parser.EncodeNullBulkString())
 }
 
 func (app *App) handleEcho(conn net.Conn, cmd *parser.Command) {
