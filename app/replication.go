@@ -42,7 +42,7 @@ func (app *App) handshakeWithMaster() error {
 	tmpReader.Read(tmpData)
 	conn.Write(parser.EncodeArray([]string{"REPLCONF", "capa", "psync2"}))
 	tmpReader.Read(tmpData)
-	conn.Write(parser.EncodeArray([]string{"PSYNC", app.replicaDetails.replicationId, strconv.Itoa(app.replicaDetails.offest)}))
+	conn.Write(parser.EncodeArray([]string{"PSYNC", "?", "-1"}))
 	tmpReader.Read(tmpData)
 	return nil
 }
