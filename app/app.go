@@ -29,34 +29,32 @@ type MasterServer struct {
 	conn net.Conn
 }
 
-type ReplicaDetails struct {
+type Replica struct {
 	replicationId string
-	offest        int
+	offset        int
+	conn          net.Conn
+	addr          net.Addr
 }
 
 type App struct {
-	listener       net.Listener
-	store          *store.Store
-	role           ServerRole
-	masterServer   MasterServer
-	replicaDetails ReplicaDetails
+	listener          net.Listener
+	store             *store.Store
+	role              ServerRole
+	masterServer      MasterServer
+	replicas          []Replica
+	replicationId     string
+	replicationOffset int
 }
 
 func newApp(listener net.Listener, role ServerRole, masterServer MasterServer) *App {
 	s, _ := store.NewStore()
-	replicaDetails := ReplicaDetails{}
-	if role == RoleMaster {
-		replicaDetails = ReplicaDetails{
-			replicationId: generateReplicationId(),
-			offest:        0,
-		}
-	}
 	return &App{
-		listener:       listener,
-		store:          s,
-		role:           role,
-		masterServer:   masterServer,
-		replicaDetails: replicaDetails,
+		listener:          listener,
+		store:             s,
+		role:              role,
+		masterServer:      masterServer,
+		replicationId:     generateReplicationId(),
+		replicationOffset: 0,
 	}
 }
 
@@ -196,7 +194,7 @@ func (app *App) handleInfo(conn net.Conn, cmd *parser.Command) {
 	includeReplication := slices.Index(cmd.Args, "replication") != -1
 	if includeReplication {
 		role := app.role
-		content := fmt.Sprintf("role:%s\r\nmaster_repl_offset:%d\r\nmaster_replid:%s", role, 0, generateReplicationId())
+		content := fmt.Sprintf("role:%s\r\nmaster_repl_offset:%d\r\nmaster_replid:%s", role, app.replicationOffset, app.replicationId)
 		conn.Write(parser.EncodeBulkString(content))
 		return
 	}
@@ -215,7 +213,23 @@ func (app *App) handleReplconf(conn net.Conn, cmd *parser.Command) {
 	conn.Write(parser.EncodeString("OK"))
 }
 func (app *App) handlePsync(conn net.Conn, cmd *parser.Command) {
-	conn.Write(parser.EncodeString(fmt.Sprintf("FULLRESYNC %s %d", app.replicaDetails.replicationId, app.replicaDetails.offest)))
+	if app.role != RoleMaster {
+		conn.Write(parser.EncodeError(fmt.Errorf("ERR not a master")))
+		return
+	}
+
+	// register this slave
+	replica := Replica{
+		replicationId: app.replicationId,
+		offset:        0,
+		conn:          conn,
+		addr:          conn.RemoteAddr(),
+	}
+	app.replicas = append(app.replicas, replica)
+	fmt.Printf("New slave connected: %s\n", conn.RemoteAddr())
+
+	conn.Write(parser.EncodeString(fmt.Sprintf("FULLRESYNC %s %d", app.replicationId, app.replicationOffset)))
+
 	data, err := os.ReadFile("./dump/empty.rdb")
 	if err != nil {
 		fmt.Println(err)
@@ -239,6 +253,11 @@ func (app *App) handleSet(conn net.Conn, cmd *parser.Command) {
 	}
 
 	app.store.SetString(key, val, expiry)
+
+	if app.role == RoleMaster {
+		app.broadcastToReplicas(cmd)
+	}
+
 	conn.Write(parser.EncodeString("OK"))
 }
 
@@ -273,6 +292,11 @@ func (app *App) handleIncrement(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeError(err))
 		return
 	}
+
+	if app.role == RoleMaster {
+		app.broadcastToReplicas(cmd)
+	}
+
 	conn.Write([]byte(fmt.Sprintf(":%d\r\n", n)))
 }
 
@@ -288,6 +312,10 @@ func (app *App) handlePush(conn net.Conn, cmd *parser.Command) {
 	if err != nil {
 		conn.Write(parser.EncodeError(err))
 		return
+	}
+
+	if app.role == RoleMaster {
+		app.broadcastToReplicas(cmd)
 	}
 
 	conn.Write(parser.EncodeInt(n))
@@ -357,6 +385,10 @@ func (app *App) handleLPop(conn net.Conn, cmd *parser.Command) {
 	if err != nil {
 		conn.Write(parser.EncodeError(err))
 		return
+	}
+
+	if app.role == RoleMaster {
+		app.broadcastToReplicas(cmd)
 	}
 
 	if !rmMultiple {
@@ -431,6 +463,11 @@ func (app *App) handleXAdd(conn net.Conn, cmd *parser.Command) {
 		conn.Write(parser.EncodeError(err))
 		return
 	}
+
+	if app.role == RoleMaster {
+		app.broadcastToReplicas(cmd)
+	}
+
 	conn.Write(parser.EncodeBulkString(id))
 }
 
@@ -594,5 +631,26 @@ func writeStreamReadData(conn net.Conn, response []store.XReadResponse) {
 			conn.Write(parser.EncodeBulkString(entry.Id))
 			conn.Write(parser.EncodeArray(entry.KeyValue))
 		}
+	}
+}
+
+func (app *App) broadcastToReplicas(cmd *parser.Command) {
+	if len(app.replicas) == 0 {
+		return
+	}
+
+	var failedReplicas []int
+	for i, replica := range app.replicas {
+		cmdBytes := parser.EncodeArray(append([]string{cmd.Name}, cmd.Args...))
+		_, err := replica.conn.Write(cmdBytes)
+		if err != nil {
+			failedReplicas = append(failedReplicas, i)
+			fmt.Printf("Failed to replicate to slave %s: %v\n", replica.addr, err)
+		}
+	}
+
+	for i := len(failedReplicas) - 1; i >= 0; i-- {
+		idx := failedReplicas[i]
+		app.replicas = append(app.replicas[:idx], app.replicas[idx+1:]...)
 	}
 }
