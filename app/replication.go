@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/codecrafters-io/redis-starter-go/app/internal/parser"
@@ -27,12 +29,20 @@ func createConnectionWithMaster(replicaOf string) (MasterServer, error) {
 }
 
 func (app *App) handshakeWithMaster() error {
-	// addr := app.listner.Addr()
-	// port := strings.Split(addr.String(), ":")[1]
+	tcpAddr := app.listener.Addr().(*net.TCPAddr)
+	port := tcpAddr.Port
+	fmt.Println("port:", port)
+
 	conn := app.masterServer.conn
+	tmpReader := bufio.NewReader(conn)
+	tmpData := make([]byte, 1024)
 	conn.Write(parser.EncodeArray([]string{"PING"}))
-	// conn.Write(parser.EncodeArray([]string{"REPLCONF", "listening-port ", port}))
-	// conn.Write(parser.EncodeArray([]string{"REPLCONF", "capa", "psync2"}))
-	// conn.Write(parser.EncodeArray([]string{"PSYNC", app.replicaDetails.replicationId, strconv.Itoa(app.replicaDetails.offest)}))
+	tmpReader.Read(tmpData)
+	conn.Write(parser.EncodeArray([]string{"REPLCONF", "listening-port", strconv.Itoa(port)}))
+	tmpReader.Read(tmpData)
+	conn.Write(parser.EncodeArray([]string{"REPLCONF", "capa", "psync2"}))
+	tmpReader.Read(tmpData)
+	conn.Write(parser.EncodeArray([]string{"PSYNC", app.replicaDetails.replicationId, strconv.Itoa(app.replicaDetails.offest)}))
+	tmpReader.Read(tmpData)
 	return nil
 }

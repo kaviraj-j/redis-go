@@ -34,7 +34,7 @@ type ReplicaDetails struct {
 }
 
 type App struct {
-	listner        net.Listener
+	listener       net.Listener
 	store          *store.Store
 	role           ServerRole
 	masterServer   MasterServer
@@ -51,7 +51,7 @@ func newApp(listener net.Listener, role ServerRole, masterServer MasterServer) *
 		}
 	}
 	return &App{
-		listner:        listener,
+		listener:       listener,
 		store:          s,
 		role:           role,
 		masterServer:   masterServer,
@@ -68,7 +68,7 @@ func (app *App) run() {
 		}
 	}
 	for {
-		conn, err := app.listner.Accept()
+		conn, err := app.listener.Accept()
 		if err != nil {
 			fmt.Println("Error accepting connection:", err.Error())
 			continue
