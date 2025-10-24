@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"slices"
@@ -22,11 +23,16 @@ func main() {
 	if ok {
 		port = customPort
 	}
-
-	config := Config{}
 	replicaOf, ok := getFlagValue(args, replicaOfFlag)
+	var masterServer MasterServer
+	role := RoleMaster
 	if ok {
-		config.replicaOf = replicaOf
+		var err error
+		masterServer, err = createConnectionWithMaster(replicaOf)
+		if err != nil {
+			log.Fatal(err)
+		}
+		role = RoleSlave
 	}
 	l, err := net.Listen("tcp", ":"+port)
 	if err != nil {
@@ -34,15 +40,8 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("Listening on port", port)
-	app := newApp(config)
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection:", err.Error())
-			continue
-		}
-		go app.handleConnection(conn)
-	}
+	app := newApp(l, role, masterServer)
+	app.run()
 }
 
 func getFlagValue(args []string, flag string) (string, bool) {

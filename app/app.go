@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"slices"
 	"strconv"
@@ -15,20 +16,64 @@ import (
 	"github.com/codecrafters-io/redis-starter-go/app/internal/store"
 )
 
+type ServerRole string
+
+const (
+	RoleMaster ServerRole = "master"
+	RoleSlave  ServerRole = "slave"
+)
+
+type MasterServer struct {
+	addr string
+	conn net.Conn
+}
+
+type ReplicaDetails struct {
+	replicationId string
+	offest        int
+}
+
 type App struct {
-	store  *store.Store
-	config Config
+	listner        net.Listener
+	store          *store.Store
+	role           ServerRole
+	masterServer   MasterServer
+	replicaDetails ReplicaDetails
 }
 
-type Config struct {
-	replicaOf string
-}
-
-func newApp(config Config) *App {
+func newApp(listener net.Listener, role ServerRole, masterServer MasterServer) *App {
 	s, _ := store.NewStore()
+	replicaDetails := ReplicaDetails{}
+	if role == RoleSlave {
+		replicaDetails = ReplicaDetails{
+			replicationId: generateReplicationId(),
+			offest:        0,
+		}
+	}
 	return &App{
-		store:  s,
-		config: config,
+		listner:        listener,
+		store:          s,
+		role:           role,
+		masterServer:   masterServer,
+		replicaDetails: replicaDetails,
+	}
+}
+
+func (app *App) run() {
+	if app.role == RoleSlave {
+		// send hand shake to master
+		err := app.handshakeWithMaster()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	for {
+		conn, err := app.listner.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err.Error())
+			continue
+		}
+		go app.handleConnection(conn)
 	}
 }
 
@@ -145,10 +190,7 @@ func (app *App) handlePing(conn net.Conn) {
 func (app *App) handleInfo(conn net.Conn, cmd *parser.Command) {
 	includeReplication := slices.Index(cmd.Args, "replication") != -1
 	if includeReplication {
-		role := "master"
-		if len(app.config.replicaOf) > 0 {
-			role = "slave"
-		}
+		role := app.role
 		content := fmt.Sprintf("role:%s\r\nmaster_repl_offset:%d\r\nmaster_replid:%s", role, 0, generateReplicationId())
 		conn.Write(parser.EncodeBulkString(content))
 		return
