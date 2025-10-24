@@ -44,7 +44,7 @@ type App struct {
 func newApp(listener net.Listener, role ServerRole, masterServer MasterServer) *App {
 	s, _ := store.NewStore()
 	replicaDetails := ReplicaDetails{}
-	if role == RoleSlave {
+	if role == RoleMaster {
 		replicaDetails = ReplicaDetails{
 			replicationId: generateReplicationId(),
 			offest:        0,
@@ -154,6 +154,10 @@ func (app *App) executeCmd(conn net.Conn, cmd *parser.Command) {
 		app.handleInfo(conn, cmd)
 	case "ECHO":
 		app.handleEcho(conn, cmd)
+	case "REPLCONF":
+		app.handleReplconf(conn, cmd)
+	case "PSYNC":
+		app.handlePsync(conn, cmd)
 	case "SET":
 		app.handleSet(conn, cmd)
 	case "GET":
@@ -204,6 +208,13 @@ func (app *App) handleEcho(conn net.Conn, cmd *parser.Command) {
 		return
 	}
 	conn.Write(parser.EncodeBulkString(cmd.Args[0]))
+}
+
+func (app *App) handleReplconf(conn net.Conn, cmd *parser.Command) {
+	conn.Write(parser.EncodeString("OK"))
+}
+func (app *App) handlePsync(conn net.Conn, cmd *parser.Command) {
+	conn.Write(parser.EncodeString(fmt.Sprintf("FULLRESYNC %s %d", app.replicaDetails.replicationId, app.replicaDetails.offest)))
 }
 
 func (app *App) handleSet(conn net.Conn, cmd *parser.Command) {
