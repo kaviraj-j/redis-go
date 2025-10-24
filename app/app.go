@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -215,6 +216,13 @@ func (app *App) handleReplconf(conn net.Conn, cmd *parser.Command) {
 }
 func (app *App) handlePsync(conn net.Conn, cmd *parser.Command) {
 	conn.Write(parser.EncodeString(fmt.Sprintf("FULLRESYNC %s %d", app.replicaDetails.replicationId, app.replicaDetails.offest)))
+	data, err := os.ReadFile("./dump/empty.rdb")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(data))))
+	conn.Write(data)
 }
 
 func (app *App) handleSet(conn net.Conn, cmd *parser.Command) {
