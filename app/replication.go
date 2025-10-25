@@ -31,7 +31,6 @@ func createConnectionWithMaster(replicaOf string) (MasterServer, error) {
 func (app *App) handshakeWithMaster() error {
 	tcpAddr := app.listener.Addr().(*net.TCPAddr)
 	port := tcpAddr.Port
-	fmt.Println("port:", port)
 
 	conn := app.masterServer.conn
 	tmpReader := bufio.NewReader(conn)
@@ -43,6 +42,7 @@ func (app *App) handshakeWithMaster() error {
 	conn.Write(parser.EncodeArray([]string{"REPLCONF", "capa", "psync2"}))
 	tmpReader.Read(tmpData)
 	conn.Write(parser.EncodeArray([]string{"PSYNC", "?", "-1"}))
-	tmpReader.Read(tmpData)
+	tmpReader.Read(tmpData) // read FULLRESYNC response
+	tmpReader.Read(tmpData) // read RDB file
 	return nil
 }

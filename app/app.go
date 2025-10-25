@@ -36,6 +36,19 @@ type Replica struct {
 	addr          net.Addr
 }
 
+type Request struct {
+	conn         net.Conn
+	cmd          *parser.Command
+	isFromMaster bool
+}
+
+func (req *Request) Write(data []byte) (int, error) {
+	if req.isFromMaster {
+		return len(data), nil
+	}
+	return req.conn.Write(data)
+}
+
 type App struct {
 	listener          net.Listener
 	store             *store.Store
@@ -61,10 +74,13 @@ func newApp(listener net.Listener, role ServerRole, masterServer MasterServer) *
 func (app *App) run() {
 	if app.role == RoleSlave {
 		// send hand shake to master
+		fmt.Println("Slave: Starting handshake with master...")
 		err := app.handshakeWithMaster()
 		if err != nil {
 			log.Fatal(err)
 		}
+		fmt.Println("Slave: Handshake completed successfully")
+		go app.handleConnection(app.masterServer.conn)
 	}
 	for {
 		conn, err := app.listener.Accept()
@@ -72,6 +88,7 @@ func (app *App) run() {
 			fmt.Println("Error accepting connection:", err.Error())
 			continue
 		}
+		fmt.Printf("New connection accepted from: %s\n", conn.RemoteAddr().String())
 		go app.handleConnection(conn)
 	}
 }
@@ -146,75 +163,100 @@ func (app *App) handleConnection(conn net.Conn) {
 }
 
 func (app *App) executeCmd(conn net.Conn, cmd *parser.Command) {
+	isFromMaster := false
+	if app.role == RoleSlave {
+		if app.masterServer.conn != nil {
+			isFromMaster = (app.masterServer.conn.RemoteAddr().String() == conn.RemoteAddr().String())
+		}
+		fmt.Printf("SLAVE: Executing command '%s' from %s, isFromMaster=%v\n", cmd.Name, conn.RemoteAddr().String(), isFromMaster)
+		if app.masterServer.conn != nil {
+			fmt.Printf("SLAVE: Master conn addr: %s\n", app.masterServer.conn.RemoteAddr().String())
+		}
+	} else if app.role == RoleMaster {
+		for _, replica := range app.replicas {
+			if replica.conn.RemoteAddr().String() == conn.RemoteAddr().String() {
+				isFromMaster = false
+				break
+			}
+		}
+		fmt.Printf("MASTER: Executing command '%s' from %s, isFromMaster=%v\n", cmd.Name, conn.RemoteAddr().String(), isFromMaster)
+	}
+
+	req := &Request{
+		conn:         conn,
+		cmd:          cmd,
+		isFromMaster: isFromMaster,
+	}
+
 	switch strings.ToUpper(cmd.Name) {
 	case "PING":
-		app.handlePing(conn)
+		app.handlePing(req)
 	case "INFO":
-		app.handleInfo(conn, cmd)
+		app.handleInfo(req)
 	case "ECHO":
-		app.handleEcho(conn, cmd)
+		app.handleEcho(req)
 	case "REPLCONF":
-		app.handleReplconf(conn, cmd)
+		app.handleReplconf(req)
 	case "PSYNC":
-		app.handlePsync(conn, cmd)
+		app.handlePsync(req)
 	case "SET":
-		app.handleSet(conn, cmd)
+		app.handleSet(req)
 	case "GET":
-		app.handleGet(conn, cmd)
+		app.handleGet(req)
 	case "INCR":
-		app.handleIncrement(conn, cmd)
+		app.handleIncrement(req)
 	case "RPUSH", "LPUSH":
-		app.handlePush(conn, cmd)
+		app.handlePush(req)
 	case "LRANGE":
-		app.handleLRange(conn, cmd)
+		app.handleLRange(req)
 	case "LLEN":
-		app.handleLLen(conn, cmd)
+		app.handleLLen(req)
 	case "LPOP":
-		app.handleLPop(conn, cmd)
+		app.handleLPop(req)
 	case "BLPOP":
-		app.handleBLPop(conn, cmd)
+		app.handleBLPop(req)
 	case "TYPE":
-		app.handleGetType(conn, cmd)
+		app.handleGetType(req)
 	case "XADD":
-		app.handleXAdd(conn, cmd)
+		app.handleXAdd(req)
 	case "XRANGE":
-		app.handleXRange(conn, cmd)
+		app.handleXRange(req)
 	case "XREAD":
-		app.handleXRead(conn, cmd)
+		app.handleXRead(req)
 	default:
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
+		req.Write(parser.EncodeError(fmt.Errorf("ERR unknown command '%s'", cmd.Name)))
 	}
 }
 
-func (app *App) handlePing(conn net.Conn) {
-	conn.Write(parser.EncodeString("PONG"))
+func (app *App) handlePing(req *Request) {
+	req.Write(parser.EncodeString("PONG"))
 }
 
-func (app *App) handleInfo(conn net.Conn, cmd *parser.Command) {
-	includeReplication := slices.Index(cmd.Args, "replication") != -1
+func (app *App) handleInfo(req *Request) {
+	includeReplication := slices.Index(req.cmd.Args, "replication") != -1
 	if includeReplication {
 		role := app.role
 		content := fmt.Sprintf("role:%s\r\nmaster_repl_offset:%d\r\nmaster_replid:%s", role, app.replicationOffset, app.replicationId)
-		conn.Write(parser.EncodeBulkString(content))
+		req.Write(parser.EncodeBulkString(content))
 		return
 	}
-	conn.Write(parser.EncodeNullBulkString())
+	req.Write(parser.EncodeNullBulkString())
 }
 
-func (app *App) handleEcho(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 1 {
-		conn.Write(parser.EncodeWrongNumArgsError("echo"))
+func (app *App) handleEcho(req *Request) {
+	if len(req.cmd.Args) < 1 {
+		req.Write(parser.EncodeWrongNumArgsError("echo"))
 		return
 	}
-	conn.Write(parser.EncodeBulkString(cmd.Args[0]))
+	req.Write(parser.EncodeBulkString(req.cmd.Args[0]))
 }
 
-func (app *App) handleReplconf(conn net.Conn, cmd *parser.Command) {
-	conn.Write(parser.EncodeString("OK"))
+func (app *App) handleReplconf(req *Request) {
+	req.Write(parser.EncodeString("OK"))
 }
-func (app *App) handlePsync(conn net.Conn, cmd *parser.Command) {
+func (app *App) handlePsync(req *Request) {
 	if app.role != RoleMaster {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR not a master")))
+		req.Write(parser.EncodeError(fmt.Errorf("ERR not a master")))
 		return
 	}
 
@@ -222,160 +264,160 @@ func (app *App) handlePsync(conn net.Conn, cmd *parser.Command) {
 	replica := Replica{
 		replicationId: app.replicationId,
 		offset:        0,
-		conn:          conn,
-		addr:          conn.RemoteAddr(),
+		conn:          req.conn,
+		addr:          req.conn.RemoteAddr(),
 	}
 	app.replicas = append(app.replicas, replica)
-	fmt.Printf("New slave connected: %s\n", conn.RemoteAddr())
+	fmt.Printf("New slave connected: %s\n", req.conn.RemoteAddr())
 
-	conn.Write(parser.EncodeString(fmt.Sprintf("FULLRESYNC %s %d", app.replicationId, app.replicationOffset)))
+	req.Write(parser.EncodeString(fmt.Sprintf("FULLRESYNC %s %d", app.replicationId, app.replicationOffset)))
 
 	data, err := os.ReadFile("./dump/empty.rdb")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(data))))
-	conn.Write(data)
+	req.Write([]byte(fmt.Sprintf("$%d\r\n", len(data))))
+	req.Write(data)
 }
 
-func (app *App) handleSet(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 2 {
-		conn.Write(parser.EncodeWrongNumArgsError("set"))
+func (app *App) handleSet(req *Request) {
+	if len(req.cmd.Args) < 2 {
+		req.Write(parser.EncodeWrongNumArgsError("set"))
 		return
 	}
 
-	key, val := cmd.Args[0], cmd.Args[1]
-	expiry, err := parseExpiry(cmd)
+	key, val := req.cmd.Args[0], req.cmd.Args[1]
+	expiry, err := parseExpiry(req.cmd)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
 	app.store.SetString(key, val, expiry)
 
-	if app.role == RoleMaster {
-		app.broadcastToReplicas(cmd)
+	if app.role == RoleMaster && !req.isFromMaster {
+		app.broadcastToReplicas(req.cmd)
 	}
 
-	conn.Write(parser.EncodeString("OK"))
+	req.Write(parser.EncodeString("OK"))
 }
 
-func (app *App) handleGet(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 1 {
-		conn.Write(parser.EncodeWrongNumArgsError("get"))
+func (app *App) handleGet(req *Request) {
+	if len(req.cmd.Args) < 1 {
+		req.Write(parser.EncodeWrongNumArgsError("get"))
 		return
 	}
 
-	valStr, ok, err := app.store.Get(cmd.Args[0])
+	valStr, ok, err := app.store.Get(req.cmd.Args[0])
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
 	if !ok {
-		conn.Write(parser.EncodeNullBulkString())
+		req.Write(parser.EncodeNullBulkString())
 		return
 	}
 
-	conn.Write(parser.EncodeBulkString(valStr))
+	req.Write(parser.EncodeBulkString(valStr))
 }
 
-func (app *App) handleIncrement(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 1 {
-		conn.Write(parser.EncodeWrongNumArgsError("incr"))
+func (app *App) handleIncrement(req *Request) {
+	if len(req.cmd.Args) < 1 {
+		req.Write(parser.EncodeWrongNumArgsError("incr"))
 		return
 	}
 
-	n, err := app.store.Increment(cmd.Args[0])
+	n, err := app.store.Increment(req.cmd.Args[0])
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
-	if app.role == RoleMaster {
-		app.broadcastToReplicas(cmd)
+	if app.role == RoleMaster && !req.isFromMaster {
+		app.broadcastToReplicas(req.cmd)
 	}
 
-	conn.Write([]byte(fmt.Sprintf(":%d\r\n", n)))
+	req.Write([]byte(fmt.Sprintf(":%d\r\n", n)))
 }
 
-func (app *App) handlePush(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 2 {
-		conn.Write(parser.EncodeWrongNumArgsError(strings.ToLower(cmd.Name)))
+func (app *App) handlePush(req *Request) {
+	if len(req.cmd.Args) < 2 {
+		req.Write(parser.EncodeWrongNumArgsError(strings.ToLower(req.cmd.Name)))
 		return
 	}
 
-	key := cmd.Args[0]
-	values := cmd.Args[1:]
-	n, err := app.store.PushList(key, values, store.PushListDirection(cmd.Name))
+	key := req.cmd.Args[0]
+	values := req.cmd.Args[1:]
+	n, err := app.store.PushList(key, values, store.PushListDirection(req.cmd.Name))
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
-	if app.role == RoleMaster {
-		app.broadcastToReplicas(cmd)
+	if app.role == RoleMaster && !req.isFromMaster {
+		app.broadcastToReplicas(req.cmd)
 	}
 
-	conn.Write(parser.EncodeInt(n))
+	req.Write(parser.EncodeInt(n))
 }
 
-func (app *App) handleLRange(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 3 {
-		conn.Write(parser.EncodeWrongNumArgsError("lrange"))
+func (app *App) handleLRange(req *Request) {
+	if len(req.cmd.Args) < 3 {
+		req.Write(parser.EncodeWrongNumArgsError("lrange"))
 		return
 	}
 
-	start, err := strconv.Atoi(cmd.Args[1])
+	start, err := strconv.Atoi(req.cmd.Args[1])
 	if err != nil {
-		conn.Write(parser.EncodeInvalidIntError("start"))
+		req.Write(parser.EncodeInvalidIntError("start"))
 		return
 	}
 
-	end, err := strconv.Atoi(cmd.Args[2])
+	end, err := strconv.Atoi(req.cmd.Args[2])
 	if err != nil {
-		conn.Write(parser.EncodeInvalidIntError("end"))
+		req.Write(parser.EncodeInvalidIntError("end"))
 		return
 	}
 
-	values, err := app.store.LRange(cmd.Args[0], start, end)
+	values, err := app.store.LRange(req.cmd.Args[0], start, end)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
-	conn.Write(parser.EncodeArray(values))
+	req.Write(parser.EncodeArray(values))
 }
 
-func (app *App) handleLLen(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 1 {
-		conn.Write(parser.EncodeWrongNumArgsError("llen"))
+func (app *App) handleLLen(req *Request) {
+	if len(req.cmd.Args) < 1 {
+		req.Write(parser.EncodeWrongNumArgsError("llen"))
 		return
 	}
 
-	key := cmd.Args[0]
+	key := req.cmd.Args[0]
 	n, err := app.store.GetListLen(key)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
-	conn.Write(parser.EncodeInt(n))
+	req.Write(parser.EncodeInt(n))
 }
 
-func (app *App) handleLPop(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 1 {
-		conn.Write(parser.EncodeWrongNumArgsError("lpop"))
+func (app *App) handleLPop(req *Request) {
+	if len(req.cmd.Args) < 1 {
+		req.Write(parser.EncodeWrongNumArgsError("lpop"))
 		return
 	}
 
-	key, count, rmMultiple := cmd.Args[0], 1, false
-	if len(cmd.Args) >= 2 {
+	key, count, rmMultiple := req.cmd.Args[0], 1, false
+	if len(req.cmd.Args) >= 2 {
 		var err error
-		count, err = strconv.Atoi(cmd.Args[1])
+		count, err = strconv.Atoi(req.cmd.Args[1])
 		if err != nil {
-			conn.Write(parser.EncodeInvalidIntError("count"))
+			req.Write(parser.EncodeInvalidIntError("count"))
 			return
 		}
 		rmMultiple = true
@@ -383,51 +425,51 @@ func (app *App) handleLPop(conn net.Conn, cmd *parser.Command) {
 
 	res, err := app.store.ListPop(key, count)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
-	if app.role == RoleMaster {
-		app.broadcastToReplicas(cmd)
+	if app.role == RoleMaster && !req.isFromMaster {
+		app.broadcastToReplicas(req.cmd)
 	}
 
 	if !rmMultiple {
 		if len(res) == 0 {
-			conn.Write(parser.EncodeNullBulkString())
+			req.Write(parser.EncodeNullBulkString())
 		} else {
-			conn.Write(parser.EncodeBulkString(res[0]))
+			req.Write(parser.EncodeBulkString(res[0]))
 		}
 		return
 	}
 
-	conn.Write(parser.EncodeArray(res))
+	req.Write(parser.EncodeArray(res))
 }
 
-func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 2 {
-		conn.Write(parser.EncodeWrongNumArgsError("blpop"))
+func (app *App) handleBLPop(req *Request) {
+	if len(req.cmd.Args) < 2 {
+		req.Write(parser.EncodeWrongNumArgsError("blpop"))
 		return
 	}
 
-	key := cmd.Args[0]
-	timeoutStr := cmd.Args[1]
+	key := req.cmd.Args[0]
+	timeoutStr := req.cmd.Args[1]
 
 	timeoutSec, err := strconv.ParseFloat(timeoutStr, 64)
 	if err != nil {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR timeout is not a float")))
+		req.Write(parser.EncodeError(fmt.Errorf("ERR timeout is not a float")))
 		return
 	}
 
 	doneChan, err := app.store.BlockListPop(key)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 	// Infinite block if timeout = 0
 	if timeoutSec == 0 {
 		val := <-doneChan
 		response := []string{key, val}
-		conn.Write(parser.EncodeArray(response))
+		req.Write(parser.EncodeArray(response))
 		return
 	}
 
@@ -435,80 +477,80 @@ func (app *App) handleBLPop(conn net.Conn, cmd *parser.Command) {
 	case val := <-doneChan:
 		// Success
 		response := []string{key, val}
-		conn.Write(parser.EncodeArray(response))
+		req.Write(parser.EncodeArray(response))
 	case <-time.After(time.Duration(timeoutSec * float64(time.Second))):
 		// Timeout
 		app.store.RemoveBlockedListChannel(key, doneChan)
-		conn.Write(parser.EncodeNullArray())
+		req.Write(parser.EncodeNullArray())
 	}
 }
 
-func (app *App) handleXAdd(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 2 {
-		conn.Write(parser.EncodeWrongNumArgsError("xadd"))
+func (app *App) handleXAdd(req *Request) {
+	if len(req.cmd.Args) < 2 {
+		req.Write(parser.EncodeWrongNumArgsError("xadd"))
 		return
 	}
 	fields := make(map[string]string)
-	fieldData := cmd.Args[2:]
+	fieldData := req.cmd.Args[2:]
 	if len(fieldData)%2 != 0 {
-		conn.Write(parser.EncodeWrongNumArgsError("xadd"))
+		req.Write(parser.EncodeWrongNumArgsError("xadd"))
 		return
 	}
 	for i := 0; i < len(fieldData); i += 2 {
 		k, v := fieldData[i], fieldData[i+1]
 		fields[k] = v
 	}
-	id, err := app.store.XAdd(cmd.Args[0], cmd.Args[1], fields)
+	id, err := app.store.XAdd(req.cmd.Args[0], req.cmd.Args[1], fields)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
-	if app.role == RoleMaster {
-		app.broadcastToReplicas(cmd)
+	if app.role == RoleMaster && !req.isFromMaster {
+		app.broadcastToReplicas(req.cmd)
 	}
 
-	conn.Write(parser.EncodeBulkString(id))
+	req.Write(parser.EncodeBulkString(id))
 }
 
-func (app *App) handleXRange(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 3 {
-		conn.Write(parser.EncodeWrongNumArgsError("xrange"))
+func (app *App) handleXRange(req *Request) {
+	if len(req.cmd.Args) < 3 {
+		req.Write(parser.EncodeWrongNumArgsError("xrange"))
 		return
 	}
 
-	res, err := app.store.XRange(cmd.Args[0], cmd.Args[1], cmd.Args[2])
+	res, err := app.store.XRange(req.cmd.Args[0], req.cmd.Args[1], req.cmd.Args[2])
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
-	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(res))))
+	req.Write([]byte(fmt.Sprintf("*%d\r\n", len(res))))
 	for _, entry := range res {
-		conn.Write([]byte("*2\r\n"))
+		req.Write([]byte("*2\r\n"))
 		// write the id
-		conn.Write(parser.EncodeBulkString(entry[0]))
+		req.Write(parser.EncodeBulkString(entry[0]))
 		// write the key values pairs
-		conn.Write(parser.EncodeArray(entry[1:]))
+		req.Write(parser.EncodeArray(entry[1:]))
 	}
 }
 
-func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 3 {
-		conn.Write(parser.EncodeWrongNumArgsError("xread"))
+func (app *App) handleXRead(req *Request) {
+	if len(req.cmd.Args) < 3 {
+		req.Write(parser.EncodeWrongNumArgsError("xread"))
 		return
 	}
-	if strings.ToUpper(cmd.Args[0]) == "BLOCK" {
-		app.handleXReadBlocked(conn, cmd)
+	if strings.ToUpper(req.cmd.Args[0]) == "BLOCK" {
+		app.handleXReadBlocked(req)
 		return
 	}
-	if strings.ToUpper(cmd.Args[0]) != "STREAMS" {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR first arg must be 'STREAMS' or 'BLOCK'")))
+	if strings.ToUpper(req.cmd.Args[0]) != "STREAMS" {
+		req.Write(parser.EncodeError(fmt.Errorf("ERR first arg must be 'STREAMS' or 'BLOCK'")))
 		return
 	}
-	keysAndIds := cmd.Args[1:]
+	keysAndIds := req.cmd.Args[1:]
 	if len(keysAndIds)%2 != 0 {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
+		req.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
 		return
 	}
 
@@ -518,26 +560,26 @@ func (app *App) handleXRead(conn net.Conn, cmd *parser.Command) {
 
 	res, err := app.store.XRead(keys, ids)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
-	writeStreamReadData(conn, res)
+	writeStreamReadData(req, res)
 }
-func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
-	waitUntilMs, _ := strconv.Atoi(cmd.Args[1])
-	if strings.ToUpper(cmd.Args[2]) != "STREAMS" {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR missing arg 'STREAMS'")))
+func (app *App) handleXReadBlocked(req *Request) {
+	waitUntilMs, _ := strconv.Atoi(req.cmd.Args[1])
+	if strings.ToUpper(req.cmd.Args[2]) != "STREAMS" {
+		req.Write(parser.EncodeError(fmt.Errorf("ERR missing arg 'STREAMS'")))
 		return
 	}
 
-	keysAndIds := cmd.Args[3:]
+	keysAndIds := req.cmd.Args[3:]
 	waitForNewEntry := false
 	if keysAndIds[len(keysAndIds)-1] == "$" {
 		waitForNewEntry = true
 	}
 
 	if !waitForNewEntry && len(keysAndIds)%2 != 0 {
-		conn.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
+		req.Write(parser.EncodeError(fmt.Errorf("ERR equal number of key and id must be there")))
 		return
 	}
 
@@ -556,14 +598,14 @@ func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
 
 	doneChan, err := app.store.XReadBlocked(keys, ids, waitForNewEntry)
 	if err != nil {
-		conn.Write(parser.EncodeError(err))
+		req.Write(parser.EncodeError(err))
 		return
 	}
 
 	if waitUntilMs == 0 {
 		// wait indefinitely
 		response := <-doneChan
-		writeStreamReadData(conn, response)
+		writeStreamReadData(req, response)
 		return
 	}
 
@@ -572,9 +614,9 @@ func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
 		for _, key := range keys {
 			app.store.RemoveBlockedStreamChannel(key, doneChan)
 		}
-		writeStreamReadData(conn, response)
+		writeStreamReadData(req, response)
 	case <-time.After(time.Duration(waitUntilMs) * time.Millisecond):
-		conn.Write(parser.EncodeNullArray())
+		req.Write(parser.EncodeNullArray())
 		go func() {
 			for _, key := range keys {
 				app.store.RemoveBlockedStreamChannel(key, doneChan)
@@ -583,15 +625,15 @@ func (app *App) handleXReadBlocked(conn net.Conn, cmd *parser.Command) {
 	}
 }
 
-func (app *App) handleGetType(conn net.Conn, cmd *parser.Command) {
-	if len(cmd.Args) < 1 {
-		conn.Write(parser.EncodeWrongNumArgsError("type"))
+func (app *App) handleGetType(req *Request) {
+	if len(req.cmd.Args) < 1 {
+		req.Write(parser.EncodeWrongNumArgsError("type"))
 		return
 	}
 
-	t := app.store.GetType(cmd.Args[0])
+	t := app.store.GetType(req.cmd.Args[0])
 
-	conn.Write(parser.EncodeString(t))
+	req.Write(parser.EncodeString(t))
 }
 
 func parseExpiry(cmd *parser.Command) (time.Time, error) {
@@ -620,32 +662,37 @@ func parseExpiry(cmd *parser.Command) (time.Time, error) {
 }
 
 // ---- helpers ----
-func writeStreamReadData(conn net.Conn, response []store.XReadResponse) {
-	conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(response))))
+func writeStreamReadData(req *Request, response []store.XReadResponse) {
+	req.Write([]byte(fmt.Sprintf("*%d\r\n", len(response))))
 	for _, r := range response {
-		conn.Write([]byte("*2\r\n"))
-		conn.Write(parser.EncodeBulkString(r.Key))
-		conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(r.Entries))))
+		req.Write([]byte("*2\r\n"))
+		req.Write(parser.EncodeBulkString(r.Key))
+		req.Write([]byte(fmt.Sprintf("*%d\r\n", len(r.Entries))))
 		for _, entry := range r.Entries {
-			conn.Write([]byte("*2\r\n"))
-			conn.Write(parser.EncodeBulkString(entry.Id))
-			conn.Write(parser.EncodeArray(entry.KeyValue))
+			req.Write([]byte("*2\r\n"))
+			req.Write(parser.EncodeBulkString(entry.Id))
+			req.Write(parser.EncodeArray(entry.KeyValue))
 		}
 	}
 }
 
 func (app *App) broadcastToReplicas(cmd *parser.Command) {
+	fmt.Printf("MASTER: Broadcasting command '%s' to %d replicas\n", cmd.Name, len(app.replicas))
 	if len(app.replicas) == 0 {
+		fmt.Println("MASTER: No replicas to broadcast to")
 		return
 	}
 
 	var failedReplicas []int
 	for i, replica := range app.replicas {
 		cmdBytes := parser.EncodeArray(append([]string{cmd.Name}, cmd.Args...))
+		fmt.Printf("MASTER: Sending command to replica %s: %s\n", replica.addr, cmd.Name)
 		_, err := replica.conn.Write(cmdBytes)
 		if err != nil {
 			failedReplicas = append(failedReplicas, i)
-			fmt.Printf("Failed to replicate to slave %s: %v\n", replica.addr, err)
+			fmt.Printf("MASTER: Failed to replicate to slave %s: %v\n", replica.addr, err)
+		} else {
+			fmt.Printf("MASTER: Successfully sent command to replica %s\n", replica.addr)
 		}
 	}
 
