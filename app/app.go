@@ -105,7 +105,7 @@ func (app *App) handleMasterConnection(conn net.Conn, reader *bufio.Reader) {
 	cmdQueue := make([]*parser.Command, 0)
 
 	for {
-		cmd, err := parser.ParseRequest(reader)
+		cmd, consumed, err := parser.ParseRequest(reader)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				fmt.Println("Master disconnected:", conn.RemoteAddr())
@@ -161,6 +161,7 @@ func (app *App) handleMasterConnection(conn net.Conn, reader *bufio.Reader) {
 		} else {
 			app.executeCmd(conn, cmd)
 		}
+		app.replicationOffset += consumed
 	}
 }
 
@@ -174,7 +175,7 @@ func (app *App) handleConnection(conn net.Conn) {
 	cmdQueue := make([]*parser.Command, 0)
 
 	for {
-		cmd, err := parser.ParseRequest(reader)
+		cmd, _, err := parser.ParseRequest(reader)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				fmt.Println("Client disconnected:", conn.RemoteAddr())
