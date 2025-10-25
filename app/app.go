@@ -252,7 +252,12 @@ func (app *App) handleEcho(req *Request) {
 }
 
 func (app *App) handleReplconf(req *Request) {
-	req.Write(parser.EncodeString("OK"))
+	args := req.cmd.Args
+	if len(args) == 2 && args[0] == "GETACK" && args[1] == "*" {
+		req.conn.Write(parser.EncodeArray([]string{"REPLCONF", "ACK", strconv.Itoa(app.replicationOffset)}))
+		return
+	}
+	req.conn.Write(parser.EncodeString("OK"))
 }
 func (app *App) handlePsync(req *Request) {
 	if app.role != RoleMaster {

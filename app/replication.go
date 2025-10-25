@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 	"strconv"
@@ -33,16 +32,25 @@ func (app *App) handshakeWithMaster() error {
 	port := tcpAddr.Port
 
 	conn := app.masterServer.conn
-	tmpReader := bufio.NewReader(conn)
 	tmpData := make([]byte, 1024)
+	// PING
 	conn.Write(parser.EncodeArray([]string{"PING"}))
-	tmpReader.Read(tmpData)
+	conn.Read(tmpData)
+
+	// REPLCONF listening-port
 	conn.Write(parser.EncodeArray([]string{"REPLCONF", "listening-port", strconv.Itoa(port)}))
-	tmpReader.Read(tmpData)
+	conn.Read(tmpData)
+
+	// REPLCONF capa
 	conn.Write(parser.EncodeArray([]string{"REPLCONF", "capa", "psync2"}))
-	tmpReader.Read(tmpData)
+	conn.Read(tmpData)
+
+	// PSYNC
 	conn.Write(parser.EncodeArray([]string{"PSYNC", "?", "-1"}))
-	tmpReader.Read(tmpData) // read FULLRESYNC response
-	tmpReader.Read(tmpData) // read RDB file
+	conn.Read(tmpData)
+
+	// rdb file
+	conn.Read(tmpData)
+
 	return nil
 }
