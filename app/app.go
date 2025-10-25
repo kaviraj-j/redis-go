@@ -73,14 +73,18 @@ func newApp(listener net.Listener, role ServerRole, masterServer MasterServer) *
 
 func (app *App) run() {
 	if app.role == RoleSlave {
-		// send hand shake to master
+		// Create a reader that will be shared between handshake and ongoing communication
+		reader := bufio.NewReader(app.masterServer.conn)
+
 		fmt.Println("Slave: Starting handshake with master...")
-		err := app.handshakeWithMaster()
+		err := app.handshakeWithMaster(reader)
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println("Slave: Handshake completed successfully")
-		go app.handleConnection(app.masterServer.conn)
+
+		// Use the same reader for handling subsequent commands
+		go app.handleMasterConnection(app.masterServer.conn, reader)
 	}
 	for {
 		conn, err := app.listener.Accept()
@@ -90,6 +94,73 @@ func (app *App) run() {
 		}
 		fmt.Printf("New connection accepted from: %s\n", conn.RemoteAddr().String())
 		go app.handleConnection(conn)
+	}
+}
+
+func (app *App) handleMasterConnection(conn net.Conn, reader *bufio.Reader) {
+	fmt.Println("Handling master connection from", conn.RemoteAddr())
+	defer conn.Close()
+
+	isQueued := false
+	cmdQueue := make([]*parser.Command, 0)
+
+	for {
+		cmd, err := parser.ParseRequest(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				fmt.Println("Master disconnected:", conn.RemoteAddr())
+				return
+			}
+			fmt.Println("Error parsing request from master:", err)
+			return
+		}
+		if cmd == nil {
+			continue
+		}
+
+		cmdUpper := strings.ToUpper(cmd.Name)
+
+		// Handle MULTI command
+		if cmdUpper == "MULTI" {
+			if isQueued {
+				conn.Write(parser.EncodeError(fmt.Errorf("ERR cmds are queued already")))
+				continue
+			}
+			isQueued = true
+			cmdQueue = make([]*parser.Command, 0)
+			conn.Write(parser.EncodeString("OK"))
+			continue
+		} else if cmdUpper == "EXEC" {
+			if !isQueued {
+				conn.Write(parser.EncodeError(fmt.Errorf("ERR EXEC without MULTI")))
+				continue
+			}
+
+			conn.Write([]byte(fmt.Sprintf("*%d\r\n", len(cmdQueue))))
+			for _, queuedCmd := range cmdQueue {
+				app.executeCmd(conn, queuedCmd)
+			}
+
+			isQueued = false
+			cmdQueue = make([]*parser.Command, 0)
+			continue
+		} else if cmdUpper == "DISCARD" {
+			if !isQueued {
+				conn.Write(parser.EncodeError(fmt.Errorf("ERR DISCARD without MULTI")))
+				continue
+			}
+			isQueued = false
+			cmdQueue = make([]*parser.Command, 0)
+			conn.Write(parser.EncodeString("OK"))
+			continue
+		}
+
+		if isQueued {
+			cmdQueue = append(cmdQueue, cmd)
+			conn.Write(parser.EncodeString("QUEUED"))
+		} else {
+			app.executeCmd(conn, cmd)
+		}
 	}
 }
 
